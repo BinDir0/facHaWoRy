@@ -213,7 +213,7 @@ def render_world_view(left_verts, right_verts, left_faces, right_faces, R_c2w, t
     
     plt.close(fig)
 
-def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, t_w2c, image_names, focal, output_path, num_frames, left_vis=None, right_vis=None, show_hand_ids=True):
+def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, t_w2c, image_names, focal, output_path, num_frames, left_vis=None, right_vis=None):
     """在相机坐标系中渲染，将手部网格投影到原始图像上，检查贴合度"""
     # 读取第一张图像获取尺寸
     first_img = cv2.imread(image_names[0])
@@ -253,7 +253,6 @@ def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, 
             t = t_w2c[frame_idx]
             
             # 投影左手
-            left_label_pos = None
             if left_vis is None or left_vis[frame_idx]:
                 left_v = left_verts[frame_idx]  # (N, 3)
                 left_v_cam = (R @ left_v.T).T + t  # 转换到相机坐标系
@@ -265,8 +264,6 @@ def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, 
                     left_v_2d = np.zeros((len(left_v), 2), dtype=np.float32)
                     left_v_cam_valid = left_v_cam[valid_left]
                     left_v_2d[valid_left] = (K @ left_v_cam_valid.T).T[:, :2] / left_v_cam_valid[:, 2:3]
-                    # 编号锚点：可见顶点中心
-                    left_label_pos = np.median(left_v_2d[valid_left], axis=0)
 
                     # 绘制左手网格（使用半透明填充）
                     for face in left_faces:
@@ -282,7 +279,6 @@ def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, 
                                 cv2.polylines(overlay, [pts_clipped], True, (200, 0, 200), 1, lineType=cv2.LINE_AA)
 
             # 投影右手
-            right_label_pos = None
             if right_vis is None or right_vis[frame_idx]:
                 right_v = right_verts[frame_idx]  # (N, 3)
                 right_v_cam = (R @ right_v.T).T + t
@@ -294,8 +290,6 @@ def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, 
                     right_v_2d = np.zeros((len(right_v), 2), dtype=np.float32)
                     right_v_cam_valid = right_v_cam[valid_right]
                     right_v_2d[valid_right] = (K @ right_v_cam_valid.T).T[:, :2] / right_v_cam_valid[:, 2:3]
-                    # 编号锚点：可见顶点中心
-                    right_label_pos = np.median(right_v_2d[valid_right], axis=0)
 
                     # 绘制右手网格
                     for face in right_faces:
@@ -318,21 +312,12 @@ def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, 
         cv2.putText(result, 'Left: Purple, Right: Blue', (10, height - 20), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        # 手部编号（Left=0, Right=1）
-        if show_hand_ids:
-            if left_label_pos is not None and np.isfinite(left_label_pos).all():
-                lx, ly = int(np.clip(left_label_pos[0], 0, width - 1)), int(np.clip(left_label_pos[1], 0, height - 1))
-                cv2.putText(result, 'L0', (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 120, 255), 2)
-            if right_label_pos is not None and np.isfinite(right_label_pos).all():
-                rx, ry = int(np.clip(right_label_pos[0], 0, width - 1)), int(np.clip(right_label_pos[1], 0, height - 1))
-                cv2.putText(result, 'R1', (rx, ry), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 120, 120), 2)
-
         out.write(result)
     
     out.release()
     print(f"Video saved to: {output_path}")
 
-def visualize_results(result_file, output_dir=None, vis_mode='world', vis_start=None, vis_end=None, max_interp_gap=30, show_hand_ids=True):
+def visualize_results(result_file, output_dir=None, vis_mode='world', vis_start=None, vis_end=None, max_interp_gap=30):
     """
     从保存的结果文件可视化手部姿态
     
@@ -515,8 +500,7 @@ def visualize_results(result_file, output_dir=None, vis_mode='world', vis_start=
                           R_w2c_sla_all[vis_start:vis_end+1].cpu().numpy(),
                           t_w2c_sla_all[vis_start:vis_end+1].cpu().numpy(),
                           image_names, img_focal, output_video, num_frames_vis,
-                          left_vis=left_vis, right_vis=right_vis,
-                          show_hand_ids=show_hand_ids)
+                          left_vis=left_vis, right_vis=right_vis)
     else:
         raise ValueError(f"Unknown vis_mode: {vis_mode}. Must be 'world' or 'cam'")
     
@@ -537,8 +521,6 @@ def main():
                        help="End frame index (default: last frame)")
     parser.add_argument("--max_interp_gap", type=int, default=30,
                        help="Maximum interpolated gap to keep visible; longer gaps are hidden in visualization")
-    parser.add_argument("--show_hand_ids", action='store_true',
-                       help="Overlay hand IDs in camera view (L0/R1)")
     
     args = parser.parse_args()
     
@@ -554,8 +536,7 @@ def main():
         args.vis_mode,
         args.start_frame,
         args.end_frame,
-        args.max_interp_gap,
-        args.show_hand_ids
+        args.max_interp_gap
     )
 
 if __name__ == '__main__':
