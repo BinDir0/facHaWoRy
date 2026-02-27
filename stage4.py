@@ -163,7 +163,7 @@ def process_single_video(worker_id, vi, total, video_path, output_root, args_dic
             tracks = None
             for retry in range(max_retries):
                 try:
-                    _, tracks = detect_track(imgfiles, thresh=0.4)
+                    _, tracks = detect_track(imgfiles, thresh=0.5)
                     break
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower() and retry < max_retries - 1:
