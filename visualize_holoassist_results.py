@@ -317,7 +317,7 @@ def render_camera_view(left_verts, right_verts, left_faces, right_faces, R_w2c, 
     out.release()
     print(f"Video saved to: {output_path}")
 
-def visualize_results(result_file, output_dir=None, vis_mode='world', vis_start=None, vis_end=None, max_interp_gap=30):
+def visualize_results(result_file, output_dir=None, vis_mode='world', vis_start=None, vis_end=None, max_interp_gap=30, coord_mode='raw'):
     """
     从保存的结果文件可视化手部姿态
     
@@ -453,21 +453,22 @@ def visualize_results(result_file, output_dir=None, vis_mode='world', vis_start=
         'faces': faces_left,
     }
     
-    # DISABLED: Coordinate transformation (R_x flip)
-    # We now use HaWoR coordinates directly, matching Zarr definition
-    # R_x = torch.tensor([[1,  0,  0],
-    #                     [0, -1,  0],
-    #                     [0,  0, -1]]).float()
-    # R_c2w_sla_all = torch.einsum('ij,njk->nik', R_x, R_c2w_sla_all)
-    # t_c2w_sla_all = torch.einsum('ij,nj->ni', R_x, t_c2w_sla_all)
-    # R_w2c_sla_all = R_c2w_sla_all.transpose(-1, -2)
-    # t_w2c_sla_all = -torch.einsum("bij,bj->bi", R_w2c_sla_all, t_c2w_sla_all)
-    # 
-    # left_dict['vertices'] = torch.einsum('ij,btnj->btni', R_x, left_dict['vertices'].cpu())
-    # right_dict['vertices'] = torch.einsum('ij,btnj->btni', R_x, right_dict['vertices'].cpu())
-    
-    # Use HaWoR coordinates directly (no R_x transformation)
-    # W2C is already computed correctly from C2W above
+    # Coordinate transform option for A/B debugging
+    if coord_mode == 'rx_flip':
+        R_x = torch.tensor([[1,  0,  0],
+                            [0, -1,  0],
+                            [0,  0, -1]], dtype=torch.float32)
+        R_c2w_sla_all = torch.einsum('ij,njk->nik', R_x, R_c2w_sla_all)
+        t_c2w_sla_all = torch.einsum('ij,nj->ni', R_x, t_c2w_sla_all)
+        R_w2c_sla_all = R_c2w_sla_all.transpose(-1, -2)
+        t_w2c_sla_all = -torch.einsum("bij,bj->bi", R_w2c_sla_all, t_c2w_sla_all)
+
+        left_dict['vertices'] = torch.einsum('ij,btnj->btni', R_x, left_dict['vertices'].cpu())
+        right_dict['vertices'] = torch.einsum('ij,btnj->btni', R_x, right_dict['vertices'].cpu())
+    elif coord_mode == 'raw':
+        pass
+    else:
+        raise ValueError(f"Unknown coord_mode: {coord_mode}. Must be 'raw' or 'rx_flip'")
     
     # 将可见性 mask 对齐到当前可视化区间
     left_vis = vis_masks[0, vis_start:vis_end+1]
@@ -521,6 +522,8 @@ def main():
                        help="End frame index (default: last frame)")
     parser.add_argument("--max_interp_gap", type=int, default=30,
                        help="Maximum interpolated gap to keep visible; longer gaps are hidden in visualization")
+    parser.add_argument("--coord_mode", type=str, default='raw', choices=['raw', 'rx_flip'],
+                       help="Coordinate mode: 'raw' uses current convention; 'rx_flip' applies diag(1,-1,-1) for A/B check")
     
     args = parser.parse_args()
     
@@ -536,7 +539,8 @@ def main():
         args.vis_mode,
         args.start_frame,
         args.end_frame,
-        args.max_interp_gap
+        args.max_interp_gap,
+        args.coord_mode
     )
 
 if __name__ == '__main__':

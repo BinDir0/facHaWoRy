@@ -266,7 +266,7 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             # get hand mask - use simplified box-based mask for speed
             # Option 1: Fast box-based mask (much faster, ~10-100x speedup)
             # Option 2: Precise rendered mask (slower but more accurate)
-            use_simple_mask = True  # Set to False for precise rendering
+            use_simple_mask = False  # Set to True for faster but less accurate box masks
             
             if use_simple_mask:
                 # Fast: Use detection boxes to create simple rectangular masks
