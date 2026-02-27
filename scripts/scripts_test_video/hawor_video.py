@@ -412,8 +412,12 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
     # runing fillingnet for this video
     frame_list = torch.tensor(list(range(pred_trans.size(1))))
     pred_valid = (pred_valid > 0).numpy()
+    # Keep immutable observed-valid mask for downstream visualization/QA
+    pred_valid_observed = pred_valid.copy()
+    # Working mask for infiller context expansion
+    pred_valid_working = pred_valid.copy()
     for k, idx in enumerate([1, 0]):
-        missing = ~pred_valid[idx]
+        missing = ~pred_valid_working[idx]
 
         frame = frame_list[missing]
         frame_chunks = parse_chunks_hand_frame(frame)
@@ -421,14 +425,14 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
         print(f"run infiller on {idx2hand[idx]} hand ...")
         for frame_ck in tqdm(frame_chunks):
             start_shift = -1
-            while frame_ck[0] + start_shift >= 0 and pred_valid[:, frame_ck[0] + start_shift].sum() != 2:
+            while frame_ck[0] + start_shift >= 0 and pred_valid_working[:, frame_ck[0] + start_shift].sum() != 2:
                 start_shift -= 1  # Shift to find the previous valid frame as start
             print(f"run infiller on frame {frame_ck[0] + start_shift} to frame {min(len(imgfiles)-1, frame_ck[0] + start_shift + filling_length)}")
 
             frame_start = frame_ck[0]
             filling_net_start = max(0, frame_start + start_shift)
             filling_net_end = min(len(imgfiles)-1, filling_net_start + filling_length)
-            seq_valid = pred_valid[:, filling_net_start:filling_net_end]
+            seq_valid = pred_valid_working[:, filling_net_start:filling_net_end]
             filling_seq = {}
             filling_seq['trans'] = pred_trans[:, filling_net_start:filling_net_end].numpy()
             filling_seq['rot'] = pred_rot[:, filling_net_start:filling_net_end].numpy()
@@ -481,9 +485,10 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
             pred_rot[:, filling_net_start:filling_net_end] = torch.from_numpy(filling_seq['rot'][:])
             pred_hand_pose[:, filling_net_start:filling_net_end] = torch.from_numpy(filling_seq['hand_pose'][:])
             pred_betas[:, filling_net_start:filling_net_end] = torch.from_numpy(filling_seq['betas'][:])
-            pred_valid[:, filling_net_start:filling_net_end] = 1
+            # Expand only working valid mask for iterative infilling context
+            pred_valid_working[:, filling_net_start:filling_net_end] = 1
     save_path = os.path.join(seq_folder, "world_space_res.pth")
-    joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid], save_path)
-    return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid
+    joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid_observed], save_path)
+    return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid_observed
 
     
