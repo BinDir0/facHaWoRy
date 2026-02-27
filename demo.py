@@ -100,7 +100,7 @@ if __name__ == '__main__':
             os.makedirs(output_pth)
         image_names = imgfiles[vis_start:vis_end]
         print(f"vis {vis_start} to {vis_end}")
-        run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end])
+        run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end], interactive=False)
     elif args.vis_mode == 'cam':
         output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         if not os.path.exists(output_pth):

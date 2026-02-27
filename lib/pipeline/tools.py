@@ -2,6 +2,7 @@ import cv2
 from tqdm import tqdm
 import numpy as np
 import torch
+from concurrent.futures import ThreadPoolExecutor
 
 from ultralytics import YOLO
 
@@ -18,61 +19,108 @@ else:
             pass
 
 
-def detect_track(imgfiles, thresh=0.5):
-    
-    hand_det_model = YOLO('./weights/external/detector.pt')
+# Global model cache to avoid reloading
+_hand_det_model_cache = None
 
-    # Run
-    boxes_ = []
+def detect_track(imgfiles, thresh=0.4, batch_size=16, model=None, chunk_size=500):
+    """
+    内存优化版 detect_track：
+    1. 分批处理图像列表，避免一次性处理太多导致 OOM
+    2. 每批之间清理 GPU 内存
+    3. 使用 stream=True 节省内存
+    """
+    global _hand_det_model_cache
+    if model is not None:
+        hand_det_model = model
+    elif _hand_det_model_cache is not None:
+        hand_det_model = _hand_det_model_cache
+    else:
+        from ultralytics import YOLO
+        import os
+        # Try to find the weights file relative to this file
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # HaWoR/lib/pipeline/../../weights/external/detector.pt -> HaWoR/weights/external/detector.pt
+        weights_path = os.path.join(current_dir, '..', '..', 'weights', 'external', 'detector.pt')
+        weights_path = os.path.abspath(weights_path)
+        
+        if not os.path.exists(weights_path):
+             # Fallback to relative path if not found (e.g. if running from HaWoR root)
+             weights_path = './weights/external/detector.pt'
+             
+        hand_det_model = YOLO(weights_path)
+        if torch.cuda.is_available():
+            hand_det_model.to('cuda')
+        _hand_det_model_cache = hand_det_model
+
     tracks = {}
-    for t, imgpath in enumerate(tqdm(imgfiles)):
-        img_cv2 = cv2.imread(imgpath)
+    total_frames = len(imgfiles)
+    
+    # 分批处理，避免内存溢出
+    num_chunks = (total_frames + chunk_size - 1) // chunk_size
+    
+    for chunk_idx in tqdm(range(num_chunks), desc="Detecting and tracking"):
+        start_idx = chunk_idx * chunk_size
+        end_idx = min(start_idx + chunk_size, total_frames)
+        chunk_files = imgfiles[start_idx:end_idx]
+        
+        # 清理 GPU 缓存（在每批开始前）
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # 使用 stream=True 处理这一批图像
+        results_generator = hand_det_model.track(
+            source=chunk_files,
+            conf=thresh,
+            persist=True,
+            stream=True,     # 生成器模式，节省内存
+            verbose=False,
+            imgsz=512,       # 降低分辨率以节省内存
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
 
-        ### --- Detection ---
-        with torch.no_grad():
-            with autocast():
-                results = hand_det_model.track(img_cv2, conf=thresh, persist=True, verbose=False)
+        for local_t, r in enumerate(results_generator):
+            t = start_idx + local_t  # 全局帧索引
+            if r.boxes is None or r.boxes.id is None:
+                continue
+            
+            # 批量获取数据，减少转化开销
+            ids = r.boxes.id.int().cpu().tolist()
+            boxes = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy()
+            clss = r.boxes.cls.int().cpu().tolist()
+
+            find_right = False
+            find_left = False
+
+            for i in range(len(ids)):
+                track_id = ids[i]
+                handedness = clss[i]
                 
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                confs = results[0].boxes.conf.cpu().numpy()
-                handedness = results[0].boxes.cls.cpu().numpy()
-                if not results[0].boxes.id is None:
-                    track_id = results[0].boxes.id.cpu().numpy()
-                else:
-                    track_id = [-1] * len(boxes)
-
-                boxes = np.hstack([boxes, confs[:, None]])
-                find_right = False
-                find_left = False
-                for idx, box in enumerate(boxes):
-                    if track_id[idx] == -1:
-                        if handedness[[idx]] > 0:
-                            id = int(10000)
-                        else:
-                            id = int(5000)
-                    else:
-                        id = track_id[idx]
-                    subj = dict()
-                    subj['frame'] = t 
-                    subj['det'] = True
-                    subj['det_box'] = boxes[[idx]]
-                    subj['det_handedness'] = handedness[[idx]]
+                # 过滤逻辑 (保持你原有的逻辑)
+                if (not find_right and handedness > 0) or (not find_left and handedness == 0):
+                    subj = {
+                        'frame': t,
+                        'det': True,
+                        'det_box': np.append(boxes[i], confs[i])[None, :],
+                        'det_handedness': np.array([handedness])
+                    }
                     
-                    
-                    if (not find_right and handedness[[idx]] > 0) or (not find_left and handedness[[idx]]==0):
-                        if id in tracks:
-                            tracks[id].append(subj)
-                        else:
-                            tracks[id] = [subj]
+                    if track_id not in tracks:
+                        tracks[track_id] = []
+                    tracks[track_id].append(subj)
 
-                        if handedness[[idx]] > 0:
-                            find_right = True
-                        elif handedness[[idx]] == 0:
-                            find_left = True
-    tracks = np.array(tracks, dtype=object)
-    boxes_ = np.array(boxes_, dtype=object)
+                    if handedness > 0: find_right = True
+                    else: find_left = True
+        
+        # 每批处理完后清理内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # 最终清理
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    return boxes_, tracks
+    return None, tracks # boxes_ 在你后面的代码里好像没用到
 
 
 def parse_chunks(frame, boxes, min_len=16):

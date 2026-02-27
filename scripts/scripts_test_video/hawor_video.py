@@ -20,6 +20,11 @@ from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
 from hawor.utils.rotation import angle_axis_to_rotation_matrix, rotation_matrix_to_angle_axis
 from infiller.lib.model.network import TransformerModel
 
+# Global model caches to avoid reloading across videos in the same process
+_hawor_model_cache = None
+_hawor_model_cfg_cache = None
+_infiller_model_cache = None
+
 def load_hawor(checkpoint_path):
     from pathlib import Path
     from hawor.configs import get_config
@@ -39,18 +44,33 @@ def load_hawor(checkpoint_path):
 
 
 def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
-    model, model_cfg = load_hawor(args.checkpoint)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = model.to(device)
-    model.eval()
+    global _hawor_model_cache, _hawor_model_cfg_cache
+    if _hawor_model_cache is not None:
+        model = _hawor_model_cache
+        model_cfg = _hawor_model_cfg_cache
+    else:
+        model, model_cfg = load_hawor(args.checkpoint)
+        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        model = model.to(device)
+        model.eval()
+        _hawor_model_cache = model
+        _hawor_model_cfg_cache = model_cfg
 
-    file = args.video_path
-    video_root = os.path.dirname(file)
-    video = os.path.basename(file).split('.')[0]
-    img_folder = f"{video_root}/{video}/extracted_images"
+    # 使用 seq_folder（即 video_out_dir）来构建图像路径
+    # 这样与 detect_track_video_custom 中保存图像的路径一致
+    img_folder = os.path.join(seq_folder, 'extracted_images')
     imgfiles = np.array(natsorted(glob(f'{img_folder}/*.jpg')))
+    
+    # 检查图像文件是否存在
+    if len(imgfiles) == 0:
+        raise ValueError(f"No images found in {img_folder}. Please extract frames first.")
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
+    
+    # 检查 tracks 是否为空
+    if not tracks or len(tracks) == 0:
+        raise ValueError(f"No hand tracks found in {seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy. Detection may have failed.")
+    
     img_focal = args.img_focal
     if img_focal is None:
         try:
@@ -64,21 +84,39 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
                 file.write(str(img_focal))
     
     tid = np.array([tr for tr in tracks])
+    
+    # 检查 tid 是否为空
+    if len(tid) == 0:
+        raise ValueError(f"Empty track IDs. No valid hand detections found.")
 
     if os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'):
         print("skip hawor motion estimation")
         frame_chunks_all = joblib.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
         return frame_chunks_all, img_focal
 
-    print(f'Running hawor on {video} ...')
+    # 获取视频名称用于日志
+    video_name = os.path.basename(seq_folder) if os.path.exists(seq_folder) else "unknown"
+    print(f'Running hawor on {video_name} ...')
 
     left_trk = []
     right_trk = []
     for k, idx in enumerate(tid):
         trk = tracks[idx]
+        
+        if len(trk) == 0:
+            continue
 
-        valid = np.array([t['det'] for t in trk])        
+        valid = np.array([t['det'] for t in trk])
+        
+        # 检查是否有有效的检测
+        if valid.sum() == 0:
+            continue
+            
         is_right = np.concatenate([t['det_handedness'] for t in trk])[valid]
+        
+        # 检查 is_right 是否为空
+        if len(is_right) == 0:
+            continue
         
         if is_right.sum() / len(is_right) < 0.5:
             left_trk.extend(trk)
@@ -91,8 +129,14 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
         1: right_trk
     }
     tid = [0, 1]
+    
+    # 检查是否有任何有效的轨迹
+    if len(left_trk) == 0 and len(right_trk) == 0:
+        raise ValueError(f"No valid hand tracks found after filtering. All detections may be invalid.")
 
     img = cv2.imread(imgfiles[0])
+    if img is None:
+        raise ValueError(f"Failed to read first image: {imgfiles[0]}")
     img_center = [img.shape[1] / 2, img.shape[0] / 2]# w/2, h/2  
     H, W = img.shape[:2]
     model_masks = np.zeros((len(imgfiles), H, W))
@@ -131,6 +175,12 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             continue
         boxes = np.concatenate([t['det_box'] for t in trk])
         non_zero_indices = np.where(np.any(boxes != 0, axis=1))[0]
+        
+        # 检查是否有非零的 boxes
+        if len(non_zero_indices) == 0:
+            print(f"  Warning: tracklet {idx} has no valid boxes, skipping...")
+            continue
+            
         first_non_zero = non_zero_indices[0]
         last_non_zero = non_zero_indices[-1]
         boxes[first_non_zero:last_non_zero+1] = interpolate_bboxes(boxes[first_non_zero:last_non_zero+1])
@@ -138,8 +188,19 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
 
 
         boxes = boxes[first_non_zero:last_non_zero+1]
+        
+        # 检查 boxes 是否为空
+        if len(boxes) == 0:
+            print(f"  Warning: tracklet {idx} has no boxes after filtering, skipping...")
+            continue
+            
         is_right = np.concatenate([t['det_handedness'] for t in trk])[valid]
         frame = np.array([t['frame'] for t in trk])[valid]
+        
+        # 检查 is_right 和 frame 是否为空
+        if len(is_right) == 0 or len(frame) == 0:
+            print(f"  Warning: tracklet {idx} has no valid frames after filtering, skipping...")
+            continue
         
         if is_right.sum() / len(is_right) < 0.5:
             is_right = np.zeros((len(boxes), 1))
@@ -153,9 +214,20 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             continue
 
         for frame_ck, boxes_ck in zip(frame_chunks, boxes_chunks):
+            # 检查 frame_ck 和 boxes_ck 是否为空
+            if len(frame_ck) == 0 or len(boxes_ck) == 0:
+                print(f"  Warning: Empty chunk, skipping...")
+                continue
+                
             print(f"inference from frame {frame_ck[0]} to {frame_ck[-1]}")
             img_ck = imgfiles[frame_ck]
-            if is_right[0] > 0:
+            
+            # 检查 img_ck 是否为空
+            if len(img_ck) == 0:
+                print(f"  Warning: No images found for frames {frame_ck}, skipping...")
+                continue
+                
+            if len(is_right) > 0 and is_right[0] > 0:
                 do_flip = False
             else:
                 do_flip = True
@@ -191,28 +263,66 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
                 json.dump(pred_dict, f, indent=1)
 
 
-            # get hand mask
-            data_out["init_root_orient"] = rotation_matrix_to_angle_axis(data_out["init_root_orient"])
-            data_out["init_hand_pose"] = rotation_matrix_to_angle_axis(data_out["init_hand_pose"])
-            if do_flip: # left
-                outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
-            else: # right
-                outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
+            # get hand mask - use simplified box-based mask for speed
+            # Option 1: Fast box-based mask (much faster, ~10-100x speedup)
+            # Option 2: Precise rendered mask (slower but more accurate)
+            use_simple_mask = True  # Set to False for precise rendering
             
-            vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
-            for img_i, _ in enumerate(img_ck):
+            if use_simple_mask:
+                # Fast: Use detection boxes to create simple rectangular masks
+                # This is much faster than rendering but less precise
+                # boxes_ck shape: (T, 5) where each row is [x1, y1, x2, y2, conf]
+                for img_i in range(len(boxes_ck)):
+                    box = boxes_ck[img_i]
+                    if len(box) >= 4 and box[0] >= 0:  # Valid box
+                        x1, y1, x2, y2 = box[0:4].astype(int)
+                        # Expand box slightly for better coverage
+                        margin = 10
+                        x1 = max(0, x1 - margin)
+                        y1 = max(0, y1 - margin)
+                        x2 = min(W, x2 + margin)
+                        y2 = min(H, y2 + margin)
+                        if x2 > x1 and y2 > y1:  # Valid box dimensions
+                            model_masks[frame_ck[img_i], y1:y2, x1:x2] = 1
+            else:
+                # Slow: Precise rendering (original method)
+                data_out["init_root_orient"] = rotation_matrix_to_angle_axis(data_out["init_root_orient"])
+                data_out["init_hand_pose"] = rotation_matrix_to_angle_axis(data_out["init_hand_pose"])
+                if do_flip: # left
+                    outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
+                else: # right
+                    outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
+                
+                vertices = outputs["vertices"][0]  # (T, N, 3) - keep on GPU
+                num_frames = len(img_ck)
+                
+                # Prepare faces and camera once (reused for all frames)
                 if do_flip:
                     faces = torch.from_numpy(faces_left).cuda()
                 else:
                     faces = torch.from_numpy(faces_right).cuda()
+                
                 cam_R = torch.eye(3).unsqueeze(0).cuda()
                 cam_T = torch.zeros(1, 3).cuda()
                 cameras, lights = renderer.create_camera_from_cv(cam_R, cam_T)
                 verts_color = torch.tensor([0, 0, 255, 255]) / 255
-                vertices_i = vertices[[img_i]]
-                rend, mask = renderer.render_multiple(vertices_i.unsqueeze(0).cuda(), faces, verts_color.unsqueeze(0).cuda(), cameras, lights)
                 
-                model_masks[frame_ck[img_i]] += mask
+                # Optimized: Prepare vertices and colors as lists for batch rendering
+                vertices_list = [vertices[i].cuda() for i in range(num_frames)]  # List of (N, 3)
+                colors_list = [verts_color.cuda() for _ in range(num_frames)]  # List of (4,)
+                
+                # Batch render all frames at once
+                rend, mask = renderer.render_multiple(
+                    vertices_list, 
+                    faces, 
+                    colors_list, 
+                    cameras, 
+                    lights
+                )
+                
+                # Update masks for all frames at once
+                for img_i in range(num_frames):
+                    model_masks[frame_ck[img_i]] += mask[img_i].cpu().numpy()
                 
     model_masks = model_masks > 0 # bool
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', model_masks)
@@ -220,27 +330,40 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     return frame_chunks_all, img_focal
 
 def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
-    # load infiller
-    weight_path = args.infiller_weight
+    global _infiller_model_cache
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    ckpt = torch.load(weight_path, map_location=device)
-    pos_dim = 3
-    shape_dim = 10
-    num_joints = 15
-    rot_dim = (num_joints + 1) * 6 # rot6d
-    repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
-    nhead = 8 # repr_dim = 154
-    horizon = 120
-    filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
-    filling_model.to(device)
-    filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
-    filling_model.eval()
 
-    file = args.video_path
-    video_root = os.path.dirname(file)
-    video = os.path.basename(file).split('.')[0]
-    seq_folder = os.path.join(video_root, video)
-    img_folder = f"{video_root}/{video}/extracted_images"
+    if _infiller_model_cache is not None:
+        filling_model = _infiller_model_cache
+    else:
+        # load infiller
+        weight_path = args.infiller_weight
+        ckpt = torch.load(weight_path, map_location=device)
+        pos_dim = 3
+        shape_dim = 10
+        num_joints = 15
+        rot_dim = (num_joints + 1) * 6 # rot6d
+        repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
+        nhead = 8 # repr_dim = 154
+        horizon = 120
+        filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
+        filling_model.to(device)
+        filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
+        filling_model.eval()
+        _infiller_model_cache = filling_model
+
+    # 优先使用 args.seq_folder（如果存在），否则从 args.video_path 构建
+    # 这样可以兼容 batch_process_holoassist_pipeline.py 的调用方式
+    if hasattr(args, 'seq_folder') and args.seq_folder:
+        seq_folder = args.seq_folder
+        img_folder = os.path.join(seq_folder, 'extracted_images')
+    else:
+        # 向后兼容：从 video_path 构建路径
+        file = args.video_path
+        video_root = os.path.dirname(file)
+        video = os.path.basename(file).split('.')[0]
+        seq_folder = os.path.join(video_root, video)
+        img_folder = f"{video_root}/{video}/extracted_images"
 
     # Previous steps
     imgfiles = np.array(natsorted(glob(f'{img_folder}/*.jpg')))

@@ -53,7 +53,10 @@ args = parser.parse_args([])
 args.stereo = False
 args.upsample = True
 args.disable_vis = True
-torch.multiprocessing.set_start_method('spawn')
+try:
+    torch.multiprocessing.set_start_method('spawn')
+except RuntimeError:
+    pass  # Already set, that's fine
 
 
 def est_calib(imagedir):
@@ -128,13 +131,32 @@ def image_stream(imagedir, calib, stride, max_frame=None):
 
 
 def run_slam(imagedir, masks, calib=None, depth=None, stride=1,  
-             filter_thresh=2.4, disable_vis=True):
+             filter_thresh=2.4, disable_vis=True, buffer=None):
     """ Maksed DROID-SLAM """
     droid = None
     depth = None
     args.filter_thresh = filter_thresh
     args.disable_vis = disable_vis
     masks = masks[::stride]
+
+    # 动态调整 buffer 大小：根据视频长度估算 keyframe 数量
+    # 对于长视频，需要更大的 buffer
+    if buffer is None:
+        if isinstance(imagedir, list):
+            num_frames = len(imagedir)
+        else:
+            num_frames = len(sorted(glob(f'{imagedir}/*.jpg')))
+        
+        # 估算 keyframe 数量：假设 5-15% 的帧会成为 keyframe（取决于运动）
+        # 对于 5000-10000 帧的视频，可能有 250-1500 个 keyframe
+        estimated_keyframes = max(512, int(num_frames * 0.15))  # 至少 512，或 15% 的帧数
+        # 设置 buffer 为估算值的 1.5 倍，确保有足够空间
+        buffer = min(8192, int(estimated_keyframes * 1.5))  # 最大 8192，避免内存问题
+        print(f'[SLAM] Auto-adjusting buffer: {num_frames} frames -> buffer={buffer} (estimated {estimated_keyframes} keyframes)')
+    else:
+        print(f'[SLAM] Using provided buffer: {buffer}')
+    
+    args.buffer = buffer
 
     img_msks, conf_msks = preprocess_masks(imagedir, masks)
     if calib is None:
