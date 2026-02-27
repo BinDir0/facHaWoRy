@@ -332,6 +332,7 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
 def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
     global _infiller_model_cache
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    horizon = 120
 
     if _infiller_model_cache is not None:
         filling_model = _infiller_model_cache
@@ -345,7 +346,6 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
         rot_dim = (num_joints + 1) * 6 # rot6d
         repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
         nhead = 8 # repr_dim = 154
-        horizon = 120
         filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
         filling_model.to(device)
         filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
@@ -441,7 +441,6 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
             src_mask = src_mask.to(device)
             filling_input = torch.from_numpy(filling_input).unsqueeze(0).to(device).permute(1,0,2) # (seq_len, B, in_dim)
             T_original = len(filling_input)
-            filling_length = 120
             if T_original < filling_length:
                 pad_length = filling_length - T_original
                 last_time_step = filling_input[-1, :, :]
@@ -457,9 +456,9 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
 
             valid = torch.from_numpy(seq_valid_padding).unsqueeze(0).all(dim=1).permute(1, 0) # (T,B)
             valid_atten = torch.from_numpy(seq_valid_padding).unsqueeze(0).all(dim=1).unsqueeze(1) # (B,1,T)
-            data_mask = torch.zeros((horizon, B, 1), device=device, dtype=filling_input.dtype)
+            data_mask = torch.zeros((T, B, 1), device=device, dtype=filling_input.dtype)
             data_mask[valid] = 1
-            atten_mask = torch.ones((B, 1, horizon),
+            atten_mask = torch.ones((B, 1, T),
                         device=device, dtype=torch.bool)
             atten_mask[valid_atten] = False
             atten_mask = atten_mask.unsqueeze(2).repeat(1, 1, T, 1) # (B,1,T,T)
