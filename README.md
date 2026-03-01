@@ -67,6 +67,8 @@ Create an account by clicking Sign Up and download the models (mano_v*_*.zip). U
 Note that MANO model falls under the [MANO license](https://mano.is.tue.mpg.de/license.html).
 ## Demo
 
+### Single Video Inference
+
 For visualizaiton in world view, run with:
 ```bash
 python demo.py --video_path ./example/video_0.mp4  --vis_mode world
@@ -75,6 +77,55 @@ python demo.py --video_path ./example/video_0.mp4  --vis_mode world
 For visualizaiton in camera view, run with:
 ```bash
 python demo.py --video_path ./example/video_0.mp4 --vis_mode cam
+```
+
+### Batch Inference (Multi-GPU)
+
+For processing multiple videos in parallel across multiple GPUs:
+
+```bash
+# Process videos from a directory using 8 GPUs
+python scripts/batch_infer.py \
+  --video_dir /path/to/videos \
+  --gpus 0,1,2,3,4,5,6,7
+
+# Process videos from a list file
+python scripts/batch_infer.py \
+  --video_list videos.txt \
+  --gpus 0,1,2,3,4,5,6,7
+
+# Custom configuration with retries
+python scripts/batch_infer.py \
+  --video_dir /path/to/videos \
+  --gpus 0,1,2,3 \
+  --retries 3 \
+  --stages detect_track,motion,slam,infiller
+```
+
+**Key features:**
+- Parallel processing across multiple GPUs (1 video per GPU)
+- Automatic resume from existing outputs (use `--no-resume` to force rerun)
+- Per-stage retry logic (default: 2 retries)
+- Structured logging and progress tracking in `batch_runs/<timestamp>/`
+- Each video processes stages sequentially: `detect_track → motion → slam → infiller`
+
+**Output structure:**
+```
+batch_runs/<timestamp>/
+├── status.json          # Current status of all videos
+├── events.jsonl         # Event stream (start/success/fail/retry)
+└── logs/
+    ├── video1_detect_track.log
+    ├── video1_motion.log
+    └── ...
+```
+
+To resume an interrupted batch:
+```bash
+python scripts/batch_infer.py \
+  --video_list videos.txt \
+  --gpus 0,1,2,3,4,5,6,7 \
+  --run_dir batch_runs/20260301_120000  # specify existing run directory
 ```
 
 ## Training
