@@ -33,7 +33,7 @@ echo ""
 # Test 1: Full pipeline
 echo "=== Test 1: Full pipeline execution ==="
 RUN_DIR="$PROJECT_ROOT/batch_runs/smoke_test_$(date +%Y%m%d_%H%M%S)"
-python "$PROJECT_ROOT/scripts/batch_infer.py" \
+/share_data/guantianrui/environment/anaconda3/envs/hawor/bin/python "$PROJECT_ROOT/scripts/batch_infer.py" \
     --video_dir "$TEST_VIDEOS_DIR" \
     --gpus "$GPUS" \
     --run_dir "$RUN_DIR" \
@@ -49,7 +49,7 @@ echo ""
 
 # Test 2: Resume (should skip all stages)
 echo "=== Test 2: Resume from existing outputs ==="
-python "$PROJECT_ROOT/scripts/batch_infer.py" \
+/share_data/guantianrui/environment/anaconda3/envs/hawor/bin/python "$PROJECT_ROOT/scripts/batch_infer.py" \
     --video_dir "$TEST_VIDEOS_DIR" \
     --gpus "$GPUS" \
     --run_dir "$RUN_DIR" \
@@ -104,7 +104,7 @@ if [ -n "$FIRST_VIDEO" ]; then
         echo "Deleting $seq_folder/world_space_res.pth"
         rm "$seq_folder/world_space_res.pth"
 
-        python "$PROJECT_ROOT/scripts/batch_infer.py" \
+        /share_data/guantianrui/environment/anaconda3/envs/hawor/bin/python "$PROJECT_ROOT/scripts/batch_infer.py" \
             --video_dir "$TEST_VIDEOS_DIR" \
             --gpus "$GPUS" \
             --run_dir "$RUN_DIR" \
