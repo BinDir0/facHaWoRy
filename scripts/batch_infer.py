@@ -144,15 +144,41 @@ class BatchScheduler:
 
         return proc.returncode, str(log_file), log_content
 
+    def verify_stage_complete(self, video_path: str, stage: str) -> bool:
+        """Verify that stage output actually exists on disk."""
+        try:
+            video_path_obj = Path(video_path)
+            seq_folder = video_path_obj.parent / video_path_obj.stem
+
+            # Import validation function from batch_worker
+            sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+            from batch_worker import is_stage_complete
+
+            return is_stage_complete(stage, seq_folder)
+        except Exception:
+            return False
+
     def process_video(self, video_path: str, gpu: int):
         task = self.tasks[video_path]
         task.start_time = datetime.now(timezone.utc).isoformat()
         self.emit_event("video_start", video=video_path, gpu=gpu)
 
         for stage in self.stages:
+            # Check both status.json AND actual disk artifacts
             if task.stage_status[stage] == "completed":
-                self.emit_event("stage_skip", video=video_path, stage=stage, gpu=gpu)
-                continue
+                if self.verify_stage_complete(video_path, stage):
+                    self.emit_event("stage_skip", video=video_path, stage=stage, gpu=gpu)
+                    continue
+                else:
+                    # Status says completed but output missing - need to rerun
+                    self.emit_event(
+                        "stage_revalidate",
+                        video=video_path,
+                        stage=stage,
+                        gpu=gpu,
+                        reason="output_missing"
+                    )
+                    task.stage_status[stage] = "pending"
 
             success = False
             for attempt in range(self.max_retries + 1):
