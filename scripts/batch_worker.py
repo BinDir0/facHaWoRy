@@ -14,17 +14,18 @@ import numpy as np
 import torch
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 # Set temporary directory to shared storage instead of local /tmp
+# IMPORTANT: Set this AFTER importing torch to avoid library loading issues
 SHARED_TMP_DIR = Path("/share_data/guantianrui/tmp")
 SHARED_TMP_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["TMPDIR"] = str(SHARED_TMP_DIR)
 os.environ["TEMP"] = str(SHARED_TMP_DIR)
 os.environ["TMP"] = str(SHARED_TMP_DIR)
 tempfile.tempdir = str(SHARED_TMP_DIR)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 STAGES = ["detect_track", "motion", "slam", "infiller"]
