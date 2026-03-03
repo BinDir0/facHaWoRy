@@ -13,7 +13,7 @@ from natsort import natsorted
 from lib.pipeline.tools import parse_chunks, parse_chunks_hand_frame
 from lib.models.hawor import HAWOR
 from lib.eval_utils.custom_utils import cam2world_convert, load_slam_cam
-from lib.eval_utils.custom_utils import interpolate_bboxes
+from lib.eval_utils.custom_utils import interpolate_bboxes, validate_motion_velocity
 from lib.eval_utils.filling_utils import filling_postprocess, filling_preprocess
 from lib.vis.renderer import Renderer
 from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
@@ -133,8 +133,15 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
         non_zero_indices = np.where(np.any(boxes != 0, axis=1))[0]
         first_non_zero = non_zero_indices[0]
         last_non_zero = non_zero_indices[-1]
+
+        # Interpolate bboxes with size consistency check
         boxes[first_non_zero:last_non_zero+1] = interpolate_bboxes(boxes[first_non_zero:last_non_zero+1])
-        valid[first_non_zero:last_non_zero+1] = True
+
+        # Apply motion velocity validation to filter implausible movements
+        velocity_valid = validate_motion_velocity(boxes[first_non_zero:last_non_zero+1])
+
+        # Update valid mask: only frames that pass both interpolation and velocity check
+        valid[first_non_zero:last_non_zero+1] = velocity_valid
 
 
         boxes = boxes[first_non_zero:last_non_zero+1]

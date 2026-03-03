@@ -19,12 +19,13 @@ else:
 
 
 def detect_track(imgfiles, thresh=0.5):
-    
+
     hand_det_model = YOLO('./weights/external/detector.pt')
 
     # Run
     boxes_ = []
     tracks = {}
+    fallback_counter = 0  # Global counter for unique fallback IDs
     for t, imgpath in enumerate(tqdm(imgfiles)):
         img_cv2 = cv2.imread(imgpath)
 
@@ -46,10 +47,13 @@ def detect_track(imgfiles, thresh=0.5):
                 find_left = False
                 for idx, box in enumerate(boxes):
                     if track_id[idx] == -1:
+                        # Generate unique fallback ID using global counter
+                        # This prevents multiple untracked detections from getting the same ID
                         if handedness[[idx]] > 0:
-                            id = int(10000)
+                            id = int(10000 + fallback_counter)  # Right hand fallbacks: 10000+
                         else:
-                            id = int(5000)
+                            id = int(5000 + fallback_counter)   # Left hand fallbacks: 5000+
+                        fallback_counter += 1
                     else:
                         id = track_id[idx]
                     subj = dict()
