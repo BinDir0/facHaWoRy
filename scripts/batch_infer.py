@@ -147,7 +147,7 @@ class BatchScheduler:
         return proc.returncode, str(log_file), log_content
 
     def verify_stage_complete(self, video_path: str, stage: str) -> bool:
-        """Verify that stage output actually exists on disk."""
+        """Verify that stage output actually exists on disk (fast check)."""
         try:
             video_path_obj = Path(video_path)
             seq_folder = video_path_obj.parent / video_path_obj.stem
@@ -156,7 +156,8 @@ class BatchScheduler:
             sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
             from batch_worker import is_stage_complete
 
-            return is_stage_complete(stage, seq_folder)
+            # Use fast_check=True for resume to avoid loading files
+            return is_stage_complete(stage, seq_folder, fast_check=True)
         except Exception:
             return False
 

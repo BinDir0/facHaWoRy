@@ -35,7 +35,30 @@ def get_seq_folder(video_path: str) -> Path:
     return video_path.parent / video_path.stem
 
 
-def get_track_range(seq_folder: Path):
+def get_track_range(seq_folder: Path, fast=False):
+    """
+    Get track range from seq_folder.
+
+    Args:
+        seq_folder: Sequence folder path
+        fast: If True, assume tracks_0_N format (faster, no glob)
+    """
+    if fast:
+        # Fast mode: assume standard naming tracks_0_N
+        # Try to find it without globbing
+        for p in seq_folder.iterdir():
+            if p.is_dir() and p.name.startswith("tracks_0_"):
+                parts = p.name.split("_")
+                if len(parts) == 3:
+                    try:
+                        start_idx = int(parts[1])
+                        end_idx = int(parts[2])
+                        return start_idx, end_idx
+                    except ValueError:
+                        pass
+        # Fallback to slow method if fast fails
+
+    # Slow method: glob all tracks_*_* directories
     track_dirs = []
     for p in seq_folder.glob("tracks_*_*"):
         parts = p.name.split("_")
@@ -95,13 +118,55 @@ def validate_stage_output(stage: str, seq_folder: Path, start_idx: int, end_idx:
     raise ValueError(f"Unknown stage: {stage}")
 
 
-def is_stage_complete(stage: str, seq_folder: Path):
+def is_stage_complete(stage: str, seq_folder: Path, fast_check=False):
+    """
+    Check if a stage is complete.
+
+    Args:
+        stage: Stage name
+        seq_folder: Sequence folder path
+        fast_check: If True, only check file existence without loading/validating content
+    """
     try:
-        start_idx, end_idx = get_track_range(seq_folder)
-        validate_stage_output(stage, seq_folder, start_idx, end_idx)
-        return True
+        start_idx, end_idx = get_track_range(seq_folder, fast=fast_check)
+
+        if fast_check:
+            # Fast check: only verify files exist, don't load them
+            return validate_stage_output_fast(stage, seq_folder, start_idx, end_idx)
+        else:
+            # Full validation: load and check content
+            validate_stage_output(stage, seq_folder, start_idx, end_idx)
+            return True
     except Exception:
         return False
+
+
+def validate_stage_output_fast(stage: str, seq_folder: Path, start_idx: int, end_idx: int):
+    """Fast validation: only check if required files exist."""
+    tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+
+    if stage == "detect_track":
+        return (
+            (tracks_dir / "model_boxes.npy").exists() and
+            (tracks_dir / "model_tracks.npy").exists() and
+            (seq_folder / "extracted_images").exists()
+        )
+
+    if stage == "motion":
+        return (
+            (tracks_dir / "frame_chunks_all.npy").exists() and
+            (tracks_dir / "model_masks.npy").exists()
+        )
+
+    if stage == "slam":
+        slam_file = seq_folder / "SLAM" / f"hawor_slam_w_scale_{start_idx}_{end_idx}.npz"
+        return slam_file.exists()
+
+    if stage == "infiller":
+        world_res = seq_folder / "world_space_res.pth"
+        return world_res.exists()
+
+    return False
 
 
 def build_stage_args(ns):
