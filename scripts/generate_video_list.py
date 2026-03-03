@@ -13,9 +13,88 @@ import sys
 from pathlib import Path
 
 
+def find_videos_fast(base_dir, factory_ids=None, worker_ids=None, sort=True):
+    """
+    Fast video finding using known directory structure.
+
+    Structure: factory_{id}/worker_{id}/processed/*.mp4
+
+    This is much faster than recursive glob because we only traverse 3 levels.
+
+    Args:
+        base_dir: Base directory to search
+        factory_ids: Optional list of factory IDs to filter
+        worker_ids: Optional list of worker IDs to filter
+        sort: Whether to sort the results
+
+    Returns:
+        List of video file paths
+    """
+    base_path = Path(base_dir)
+
+    if not base_path.exists():
+        print(f"Error: Directory does not exist: {base_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if not base_path.is_dir():
+        print(f"Error: Not a directory: {base_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Searching for videos in: {base_dir}", file=sys.stderr)
+
+    videos = []
+    factory_set = set(factory_ids) if factory_ids else None
+    worker_set = set(worker_ids) if worker_ids else None
+
+    # Level 1: Iterate through factory_* directories
+    factory_dirs = [d for d in base_path.iterdir() if d.is_dir() and d.name.startswith("factory_")]
+    print(f"Found {len(factory_dirs)} factory directories", file=sys.stderr)
+
+    for factory_dir in factory_dirs:
+        # Extract factory ID
+        try:
+            factory_id = int(factory_dir.name.split("_")[1])
+        except (IndexError, ValueError):
+            continue
+
+        # Filter by factory ID if specified
+        if factory_set and factory_id not in factory_set:
+            continue
+
+        # Level 2: Iterate through worker_* directories
+        worker_dirs = [d for d in factory_dir.iterdir() if d.is_dir() and d.name.startswith("worker_")]
+
+        for worker_dir in worker_dirs:
+            # Extract worker ID
+            try:
+                worker_id = int(worker_dir.name.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+
+            # Filter by worker ID if specified
+            if worker_set and worker_id not in worker_set:
+                continue
+
+            # Level 3: Get videos from processed directory
+            processed_dir = worker_dir / "processed"
+            if processed_dir.exists() and processed_dir.is_dir():
+                video_files = list(processed_dir.glob("*.mp4"))
+                videos.extend(video_files)
+
+    if sort:
+        videos = sorted(videos)
+
+    print(f"Found {len(videos)} videos", file=sys.stderr)
+
+    return [str(v.resolve()) for v in videos]
+
+
 def find_videos(base_dir, pattern="**/*.mp4", sort=True):
     """
-    Find all video files in the base directory.
+    Find all video files in the base directory (slow recursive method).
+
+    This is kept for backward compatibility but is much slower.
+    Use find_videos_fast() instead for BuildAI dataset structure.
 
     Args:
         base_dir: Base directory to search
@@ -174,29 +253,47 @@ Examples:
         action="store_true",
         help="Do not sort the video list"
     )
+    parser.add_argument(
+        "--slow",
+        action="store_true",
+        help="Use slow recursive glob method instead of fast structured search"
+    )
 
     args = parser.parse_args()
 
-    # Find all videos
-    videos = find_videos(args.base_dir, args.pattern, sort=not args.no_sort)
+    # Use fast method by default (leverages known directory structure)
+    # Use slow method only if --slow is specified or --pattern is customized
+    use_fast = not args.slow and args.pattern == "**/*.mp4"
+
+    if use_fast:
+        print("Using fast structured search (factory_*/worker_*/processed/*.mp4)", file=sys.stderr)
+        videos = find_videos_fast(
+            args.base_dir,
+            factory_ids=args.factory,
+            worker_ids=args.worker,
+            sort=not args.no_sort
+        )
+    else:
+        if args.slow:
+            print("Using slow recursive glob method (--slow specified)", file=sys.stderr)
+        else:
+            print(f"Using slow recursive glob method (custom pattern: {args.pattern})", file=sys.stderr)
+
+        videos = find_videos(args.base_dir, args.pattern, sort=not args.no_sort)
+
+        # Apply filters for slow method
+        if args.factory:
+            print(f"Filtering by factories: {args.factory}", file=sys.stderr)
+            videos = filter_by_factory(videos, args.factory)
+            print(f"After factory filter: {len(videos)} videos", file=sys.stderr)
+
+        if args.worker:
+            print(f"Filtering by workers: {args.worker}", file=sys.stderr)
+            videos = filter_by_worker(videos, args.worker)
+            print(f"After worker filter: {len(videos)} videos", file=sys.stderr)
 
     if not videos:
         print("No videos found!", file=sys.stderr)
-        sys.exit(1)
-
-    # Apply filters
-    if args.factory:
-        print(f"Filtering by factories: {args.factory}", file=sys.stderr)
-        videos = filter_by_factory(videos, args.factory)
-        print(f"After factory filter: {len(videos)} videos", file=sys.stderr)
-
-    if args.worker:
-        print(f"Filtering by workers: {args.worker}", file=sys.stderr)
-        videos = filter_by_worker(videos, args.worker)
-        print(f"After worker filter: {len(videos)} videos", file=sys.stderr)
-
-    if not videos:
-        print("No videos match the filters!", file=sys.stderr)
         sys.exit(1)
 
     # Output
