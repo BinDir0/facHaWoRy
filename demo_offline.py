@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Offline visualization for HaWoR - no OpenGL/display required.
+Simple offline visualization for HaWoR - works on any headless server.
 
-Uses pyrender with OSMesa backend for pure CPU rendering.
-Generates mp4 video directly without requiring display server.
+Uses OpenCV for simple 3D projection rendering - no OpenGL/pyrender required.
+Generates mp4 video with basic hand mesh visualization.
 
 Installation:
-    pip install pyrender trimesh
-    # For OSMesa (CPU rendering):
-    conda install -c conda-forge osmesa
-    # Or: sudo apt-get install libosmesa6-dev
+    pip install opencv-python numpy torch
+    # No special dependencies needed!
 
 Usage:
     python demo_offline.py --video_path video.mp4 --vis_mode world
@@ -26,9 +24,6 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-# Set OSMesa backend BEFORE importing pyrender
-os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
-
 sys.path.insert(0, os.path.dirname(__file__))
 
 from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
@@ -38,65 +33,59 @@ from scripts.scripts_test_video.hawor_slam import hawor_slam
 from scripts.scripts_test_video.hawor_video import hawor_infiller, hawor_motion_estimation
 
 
-def render_frame_pyrender(vertices_left, vertices_right, faces_left, faces_right,
-                          bg_image, camera_pose, focal_length, width, height):
-    """Render a single frame using pyrender with OSMesa (CPU)."""
-    try:
-        import pyrender
-        import trimesh
-    except ImportError:
-        print("Error: pyrender not installed. Install with:")
-        print("  pip install pyrender trimesh")
-        print("For CPU rendering, also install:")
-        print("  conda install -c conda-forge osmesa")
-        print("  # Or: sudo apt-get install libosmesa6-dev")
-        sys.exit(1)
+def project_3d_to_2d(vertices, camera_pose, focal_length, width, height):
+    """Project 3D vertices to 2D image coordinates using camera intrinsics."""
+    # Transform vertices to camera space
+    R = camera_pose[:3, :3]
+    t = camera_pose[:3, 3]
+    vertices_cam = vertices @ R.T + t
 
-    # Create scene
-    scene = pyrender.Scene(ambient_light=[0.3, 0.3, 0.3], bg_color=[0, 0, 0, 0])
+    # Project to 2D
+    x = vertices_cam[:, 0] / (vertices_cam[:, 2] + 1e-8) * focal_length + width / 2
+    y = vertices_cam[:, 1] / (vertices_cam[:, 2] + 1e-8) * focal_length + height / 2
+    z = vertices_cam[:, 2]
 
-    # Add left hand mesh (purple)
-    if vertices_left is not None and len(vertices_left) > 0:
-        mesh_left = trimesh.Trimesh(vertices=vertices_left, faces=faces_left, process=False)
-        mesh_left.visual.vertex_colors = [128, 100, 200, 255]
-        mesh_pyrender_left = pyrender.Mesh.from_trimesh(mesh_left, smooth=True)
-        scene.add(mesh_pyrender_left)
+    return np.stack([x, y, z], axis=1)
 
-    # Add right hand mesh (blue)
+
+def render_frame_simple(vertices_left, vertices_right, faces_left, faces_right,
+                        bg_image, camera_pose, focal_length, width, height):
+    """Render a single frame using simple OpenCV drawing - works everywhere!"""
+    result = bg_image.copy()
+
+    # Draw right hand (blue)
     if vertices_right is not None and len(vertices_right) > 0:
-        mesh_right = trimesh.Trimesh(vertices=vertices_right, faces=faces_right, process=False)
-        mesh_right.visual.vertex_colors = [53, 152, 202, 255]
-        mesh_pyrender_right = pyrender.Mesh.from_trimesh(mesh_right, smooth=True)
-        scene.add(mesh_pyrender_right)
+        pts_2d = project_3d_to_2d(vertices_right, camera_pose, focal_length, width, height)
 
-    # Add camera
-    camera = pyrender.IntrinsicsCamera(
-        fx=focal_length, fy=focal_length,
-        cx=width / 2, cy=height / 2
-    )
-    scene.add(camera, pose=camera_pose)
+        # Draw mesh edges
+        for face in faces_right:
+            # Only draw faces facing camera (z > 0)
+            if pts_2d[face, 2].mean() > 0:
+                pts = pts_2d[face, :2].astype(np.int32)
+                # Draw filled triangle with transparency
+                overlay = result.copy()
+                cv2.fillPoly(overlay, [pts], color=(202, 152, 53))  # BGR: blue
+                cv2.addWeighted(overlay, 0.6, result, 0.4, 0, result)
+                # Draw edges
+                cv2.polylines(result, [pts], isClosed=True, color=(180, 130, 30), thickness=1)
 
-    # Add lights
-    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
-    scene.add(light, pose=camera_pose)
+    # Draw left hand (purple)
+    if vertices_left is not None and len(vertices_left) > 0:
+        pts_2d = project_3d_to_2d(vertices_left, camera_pose, focal_length, width, height)
 
-    # Render
-    renderer = pyrender.OffscreenRenderer(width, height)
-    color, depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
-    renderer.delete()
-
-    # Composite with background
-    if bg_image is not None:
-        alpha = color[:, :, 3:4].astype(float) / 255.0
-        result = (color[:, :, :3] * alpha + bg_image * (1 - alpha)).astype(np.uint8)
-    else:
-        result = color[:, :, :3]
+        # Draw mesh edges
+        for face in faces_left:
+            # Only draw faces facing camera (z > 0)
+            if pts_2d[face, 2].mean() > 0:
+                pts = pts_2d[face, :2].astype(np.int32)
+                # Draw filled triangle with transparency
+                overlay = result.copy()
+                cv2.fillPoly(overlay, [pts], color=(200, 100, 128))  # BGR: purple
+                cv2.addWeighted(overlay, 0.6, result, 0.4, 0, result)
+                # Draw edges
+                cv2.polylines(result, [pts], isClosed=True, color=(180, 80, 100), thickness=1)
 
     return result
-        else:
-            result = color
-
-        return result
 
 def create_video_world_mode(left_verts, right_verts, faces_left, faces_right,
                             image_paths, R_c2w, t_c2w, focal_length,
@@ -124,7 +113,7 @@ def create_video_world_mode(left_verts, right_verts, faces_left, faces_right,
         camera_pose[:3, 3] = t_c2w[frame_idx]
 
         # Render frame
-        frame = render_frame_pyrender(
+        frame = render_frame_simple(
             left_verts[frame_idx], right_verts[frame_idx],
             faces_left, faces_right,
             bg_img, camera_pose,
@@ -166,7 +155,7 @@ def create_video_cam_mode(left_verts, right_verts, faces_left, faces_right,
         camera_pose[:3, 3] = t_w2c[frame_idx]
 
         # Render frame
-        frame = render_frame_pyrender(
+        frame = render_frame_simple(
             left_verts[frame_idx], right_verts[frame_idx],
             faces_left, faces_right,
             bg_img, camera_pose,
