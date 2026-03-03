@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from tqdm import tqdm
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STAGES = ["detect_track", "motion", "slam", "infiller"]
@@ -233,7 +235,7 @@ class BatchScheduler:
         self.emit_event("video_completed", video=video_path, gpu=gpu)
         return True
 
-    def worker_loop(self, gpu: int, video_queue: mp.Queue, result_queue: mp.Queue):
+    def worker_loop(self, gpu: int, video_queue: mp.Queue, result_queue: mp.Queue, progress_queue: mp.Queue):
         while True:
             try:
                 video_path = video_queue.get(timeout=1)
@@ -245,6 +247,7 @@ class BatchScheduler:
 
             success = self.process_video(video_path, gpu)
             result_queue.put((video_path, success))
+            progress_queue.put(1)  # Signal completion
 
     def run(self):
         if self.resume:
@@ -254,6 +257,7 @@ class BatchScheduler:
 
         video_queue = mp.Queue()
         result_queue = mp.Queue()
+        progress_queue = mp.Queue()
 
         for vp in self.video_paths:
             video_queue.put(vp)
@@ -263,9 +267,22 @@ class BatchScheduler:
 
         workers = []
         for gpu in self.gpus:
-            p = mp.Process(target=self.worker_loop, args=(gpu, video_queue, result_queue))
+            p = mp.Process(target=self.worker_loop, args=(gpu, video_queue, result_queue, progress_queue))
             p.start()
             workers.append(p)
+
+        # Progress bar
+        with tqdm(total=len(self.video_paths), desc="Processing videos", unit="video") as pbar:
+            completed = 0
+            while completed < len(self.video_paths):
+                try:
+                    progress_queue.get(timeout=0.1)
+                    completed += 1
+                    pbar.update(1)
+                except:
+                    # Check if all workers are done
+                    if all(not w.is_alive() for w in workers):
+                        break
 
         for w in workers:
             w.join()
