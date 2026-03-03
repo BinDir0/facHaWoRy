@@ -52,38 +52,34 @@ def render_frame_simple(vertices_left, vertices_right, faces_left, faces_right,
                         bg_image, camera_pose, focal_length, width, height):
     """Render a single frame using simple OpenCV drawing - works everywhere!"""
     result = bg_image.copy()
+    overlay = np.zeros_like(result)
+    mask = np.zeros(result.shape[:2], dtype=np.uint8)
 
-    # Draw right hand (blue)
+    # Draw right hand (blue) to overlay
     if vertices_right is not None and len(vertices_right) > 0:
         pts_2d = project_3d_to_2d(vertices_right, camera_pose, focal_length, width, height)
 
-        # Draw mesh edges
         for face in faces_right:
             # Only draw faces facing camera (z > 0)
             if pts_2d[face, 2].mean() > 0:
                 pts = pts_2d[face, :2].astype(np.int32)
-                # Draw filled triangle with transparency
-                overlay = result.copy()
                 cv2.fillPoly(overlay, [pts], color=(202, 152, 53))  # BGR: blue
-                cv2.addWeighted(overlay, 0.6, result, 0.4, 0, result)
-                # Draw edges
-                cv2.polylines(result, [pts], isClosed=True, color=(180, 130, 30), thickness=1)
+                cv2.fillPoly(mask, [pts], color=255)
 
-    # Draw left hand (purple)
+    # Draw left hand (purple) to overlay
     if vertices_left is not None and len(vertices_left) > 0:
         pts_2d = project_3d_to_2d(vertices_left, camera_pose, focal_length, width, height)
 
-        # Draw mesh edges
         for face in faces_left:
             # Only draw faces facing camera (z > 0)
             if pts_2d[face, 2].mean() > 0:
                 pts = pts_2d[face, :2].astype(np.int32)
-                # Draw filled triangle with transparency
-                overlay = result.copy()
                 cv2.fillPoly(overlay, [pts], color=(200, 100, 128))  # BGR: purple
-                cv2.addWeighted(overlay, 0.6, result, 0.4, 0, result)
-                # Draw edges
-                cv2.polylines(result, [pts], isClosed=True, color=(180, 80, 100), thickness=1)
+                cv2.fillPoly(mask, [pts], color=255)
+
+    # Blend overlay with background once (much faster!)
+    mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR).astype(float) / 255.0
+    result = (overlay * mask_3ch * 0.7 + result * (1 - mask_3ch * 0.7)).astype(np.uint8)
 
     return result
 
