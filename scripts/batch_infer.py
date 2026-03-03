@@ -371,6 +371,18 @@ def get_parser():
         type=float,
         help="Image focal length (optional)",
     )
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Start index of video list (inclusive, 0-based)",
+    )
+    parser.add_argument(
+        "--end",
+        type=int,
+        default=None,
+        help="End index of video list (exclusive, None means process all)",
+    )
 
     return parser
 
@@ -388,6 +400,25 @@ def main():
         print("Error: No videos found", file=sys.stderr)
         sys.exit(1)
 
+    # Apply start-end slicing
+    total_videos = len(video_paths)
+    start_idx = args.start
+    end_idx = args.end if args.end is not None else total_videos
+
+    # Validate indices
+    if start_idx < 0 or start_idx >= total_videos:
+        print(f"Error: --start {start_idx} is out of range [0, {total_videos})", file=sys.stderr)
+        sys.exit(1)
+    if end_idx < start_idx or end_idx > total_videos:
+        print(f"Error: --end {end_idx} is out of range [{start_idx}, {total_videos}]", file=sys.stderr)
+        sys.exit(1)
+
+    video_paths = video_paths[start_idx:end_idx]
+
+    if not video_paths:
+        print(f"Error: No videos in range [{start_idx}, {end_idx})", file=sys.stderr)
+        sys.exit(1)
+
     gpus = [int(g.strip()) for g in args.gpus.split(",")]
     stages = [s.strip() for s in args.stages.split(",")]
 
@@ -400,7 +431,9 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"=== Batch Inference Configuration ===")
-    print(f"Videos: {len(video_paths)}")
+    print(f"Total videos in list: {total_videos}")
+    print(f"Processing range: [{start_idx}, {end_idx})")
+    print(f"Videos to process: {len(video_paths)}")
     print(f"GPUs: {gpus}")
     print(f"Stages: {stages}")
     print(f"Max retries: {args.retries}")
