@@ -184,8 +184,8 @@ def main():
         epilog="""
 Examples:
   # Generate list of all videos
-  python scripts/generate_video_list.py \\
-      --base_dir /share_data/lvjianan/datasets/BuildAI-processed \\
+  python scripts/generate_video_list.py \
+      --base_dir /share_data/lvjianan/datasets/BuildAI-processed \
       --output videos.txt
 
   # Filter by specific factories
