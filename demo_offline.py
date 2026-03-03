@@ -181,6 +181,8 @@ def main():
     parser.add_argument("--vis_mode", type=str, default='world', choices=['world', 'cam'],
                        help='Visualization mode: world or cam')
     parser.add_argument("--fps", type=int, default=30, help='FPS for video output')
+    parser.add_argument("--max_frames", type=int, default=None,
+                       help='Maximum number of frames to visualize (default: all frames)')
     args = parser.parse_args()
 
     # Run inference pipeline (reuse existing results if available)
@@ -201,6 +203,11 @@ def main():
     print("\n=== Preparing hand meshes ===")
     vis_start = 0
     vis_end = pred_trans.shape[1] - 1
+
+    # Limit frames if max_frames is specified
+    if args.max_frames is not None:
+        vis_end = min(vis_start + args.max_frames - 1, vis_end)
+        print(f"Limiting visualization to first {args.max_frames} frames (0 to {vis_end})")
 
     faces = get_mano_faces()
     faces_new = np.array([[92, 38, 234], [234, 38, 239], [38, 122, 239],
