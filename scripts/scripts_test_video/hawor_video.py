@@ -77,9 +77,24 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     for k, idx in enumerate(tid):
         trk = tracks[idx]
 
-        valid = np.array([t['det'] for t in trk])        
+        # Filter out very short tracks (likely false positives)
+        if len(trk) < 5:  # Require at least 5 frames
+            continue
+
+        # Check average confidence
+        confs = [t['det_box'][0, 4] for t in trk if t['det']]
+        if len(confs) == 0 or np.mean(confs) < 0.3:  # Require avg confidence >= 0.3
+            continue
+
+        # Check if track is mostly near edges (likely hand leaving/entering frame)
+        if 'is_near_edge' in trk[0]:
+            edge_ratio = sum(1 for t in trk if t.get('is_near_edge', False)) / len(trk)
+            if edge_ratio > 0.7:  # If >70% detections are near edge, likely unstable
+                continue
+
+        valid = np.array([t['det'] for t in trk])
         is_right = np.concatenate([t['det_handedness'] for t in trk])[valid]
-        
+
         if is_right.sum() / len(is_right) < 0.5:
             left_trk.extend(trk)
         else:

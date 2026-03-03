@@ -55,9 +55,10 @@ def detect_track_video(args):
         print(f"skip track for {start_idx}_{end_idx}")
         return start_idx, end_idx, seq_folder, imgfiles
     os.makedirs(f"{seq_folder}/tracks_{start_idx}_{end_idx}", exist_ok=True)
-    # Increased threshold from 0.2 to 0.25 to reduce false positives during fast motion
-    # For videos with very fast hand movements, consider increasing to 0.3
-    boxes_, tracks_ = detect_track(imgfiles, thresh=0.25)
+    # Increased threshold from 0.2 to 0.35 to reduce false positives
+    # Especially important when hands leave frame or camera moves rapidly
+    # Edge detections require even higher confidence (0.4) to avoid background objects
+    boxes_, tracks_ = detect_track(imgfiles, thresh=0.35, edge_margin_ratio=0.1, min_edge_conf=0.4)
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy', boxes_)
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', tracks_)
 
