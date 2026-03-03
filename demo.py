@@ -22,7 +22,13 @@ if __name__ == '__main__':
     parser.add_argument("--checkpoint",  type=str, default='./weights/hawor/checkpoints/hawor.ckpt')
     parser.add_argument("--infiller_weight",  type=str, default='./weights/hawor/checkpoints/infiller.pt')
     parser.add_argument("--vis_mode",  type=str, default='world', help='cam | world')
+    parser.add_argument("--headless", action='store_true', help='Run in headless mode (no GUI, save video file)')
     args = parser.parse_args()
+
+    # Set offscreen rendering for headless mode
+    if args.headless:
+        import os
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
     start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
 
@@ -94,13 +100,15 @@ if __name__ == '__main__':
     right_dict['vertices'] = torch.einsum('ij,btnj->btni', R_x, right_dict['vertices'].cpu())
     
     # Here we use aitviewer(https://github.com/eth-ait/aitviewer) for simple visualization.
-    if args.vis_mode == 'world': 
+    if args.vis_mode == 'world':
         output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         if not os.path.exists(output_pth):
             os.makedirs(output_pth)
         image_names = imgfiles[vis_start:vis_end]
         print(f"vis {vis_start} to {vis_end}")
-        run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end])
+        video_path = run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end], interactive=not args.headless)
+        if args.headless and video_path:
+            print(f"Video saved to: {video_path}")
     elif args.vis_mode == 'cam':
         output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         if not os.path.exists(output_pth):
