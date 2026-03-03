@@ -11,6 +11,7 @@ import multiprocessing as mp
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -19,6 +20,14 @@ from typing import Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
+
+# Set temporary directory to shared storage instead of local /tmp
+SHARED_TMP_DIR = Path("/share_data/guantianrui/tmp")
+SHARED_TMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["TMPDIR"] = str(SHARED_TMP_DIR)
+os.environ["TEMP"] = str(SHARED_TMP_DIR)
+os.environ["TMP"] = str(SHARED_TMP_DIR)
+tempfile.tempdir = str(SHARED_TMP_DIR)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STAGES = ["detect_track", "motion", "slam", "infiller"]
