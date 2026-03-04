@@ -84,13 +84,13 @@ def render_frame_simple(vertices_left, vertices_right, faces_left, faces_right,
     return result
 
 def create_video_world_mode(left_verts, right_verts, faces_left, faces_right,
-                            image_paths, R_c2w, t_c2w, focal_length,
+                            frame_source, frame_indices, R_c2w, t_c2w, focal_length,
                             output_path, fps=30):
     """Create video in world coordinate mode."""
     print("Rendering video in world mode...")
 
     # Get video dimensions
-    first_img = cv2.imread(image_paths[0])
+    first_img = frame_source.get_frame(int(frame_indices[0]), rgb=False)
     height, width = first_img.shape[:2]
 
     # Create video writer
@@ -100,8 +100,7 @@ def create_video_world_mode(left_verts, right_verts, faces_left, faces_right,
     num_frames = left_verts.shape[0]
     for frame_idx in tqdm(range(num_frames), desc="Rendering frames"):
         # Load background image
-        bg_img = cv2.imread(image_paths[frame_idx])
-        bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
+        bg_img = frame_source.get_frame(int(frame_indices[frame_idx]), rgb=True)
 
         # Camera pose for this frame
         camera_pose = np.eye(4)
@@ -126,13 +125,13 @@ def create_video_world_mode(left_verts, right_verts, faces_left, faces_right,
 
 
 def create_video_cam_mode(left_verts, right_verts, faces_left, faces_right,
-                         image_paths, R_w2c, t_w2c, focal_length,
+                         frame_source, frame_indices, R_w2c, t_w2c, focal_length,
                          output_path, fps=30):
     """Create video in camera coordinate mode."""
     print("Rendering video in camera mode...")
 
     # Get video dimensions
-    first_img = cv2.imread(image_paths[0])
+    first_img = frame_source.get_frame(int(frame_indices[0]), rgb=False)
     height, width = first_img.shape[:2]
 
     # Create video writer
@@ -142,8 +141,7 @@ def create_video_cam_mode(left_verts, right_verts, faces_left, faces_right,
     num_frames = left_verts.shape[0]
     for frame_idx in tqdm(range(num_frames), desc="Rendering frames"):
         # Load background image
-        bg_img = cv2.imread(image_paths[frame_idx])
-        bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
+        bg_img = frame_source.get_frame(int(frame_indices[frame_idx]), rgb=True)
 
         # Camera pose for this frame (world to camera)
         camera_pose = np.eye(4)
@@ -183,7 +181,7 @@ def main():
 
     # Run inference pipeline (reuse existing results if available)
     print("=== Running HaWoR inference ===")
-    start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
+    start_idx, end_idx, seq_folder, frame_source = detect_track_video(args)
     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
 
     slam_path = os.path.join(seq_folder, f"SLAM/hawor_slam_w_scale_{start_idx}_{end_idx}.npz")
@@ -247,22 +245,21 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     output_video = output_dir / "visualization.mp4"
 
-    # Image paths
-    image_names = [str(f) for f in imgfiles[vis_start:vis_end]]
+    frame_indices = np.arange(vis_start, vis_end, dtype=np.int64)
 
     # Render video
     print(f"\n=== Rendering video ({args.vis_mode} mode) ===")
     if args.vis_mode == 'world':
         create_video_world_mode(
             left_verts, right_verts, faces_left, faces_right,
-            image_names, R_c2w_sla_all[vis_start:vis_end].cpu().numpy(),
+            frame_source, frame_indices, R_c2w_sla_all[vis_start:vis_end].cpu().numpy(),
             t_c2w_sla_all[vis_start:vis_end].cpu().numpy(),
             img_focal, output_video, fps=args.fps
         )
     else:  # cam mode
         create_video_cam_mode(
             left_verts, right_verts, faces_left, faces_right,
-            image_names, R_w2c_sla_all[vis_start:vis_end].cpu().numpy(),
+            frame_source, frame_indices, R_w2c_sla_all[vis_start:vis_end].cpu().numpy(),
             t_w2c_sla_all[vis_start:vis_end].cpu().numpy(),
             img_focal, output_video, fps=args.fps
         )

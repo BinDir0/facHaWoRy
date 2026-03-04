@@ -11,6 +11,8 @@ from PIL import Image
 import cv2
 from glob import glob
 
+from lib.pipeline.frame_source import ImageFolderFrameSource
+
 from droid import Droid
 from torch.multiprocessing import Process
 
@@ -56,13 +58,21 @@ args.disable_vis = True
 torch.multiprocessing.set_start_method('spawn')
 
 
+def _to_frame_source(imagedir):
+    if hasattr(imagedir, 'get_frame') and hasattr(imagedir, '__len__'):
+        return imagedir
+
+    if isinstance(imagedir, list):
+        return ImageFolderFrameSource(imagedir)
+
+    image_list = sorted(glob(f'{imagedir}/*.jpg'))
+    return ImageFolderFrameSource(image_list)
+
+
 def est_calib(imagedir):
     """ Roughly estimate intrinsics by image dimensions """
-    if isinstance(imagedir, list):
-        imgfiles = imagedir
-    else:
-        imgfiles = sorted(glob(f'{imagedir}/*.jpg'))
-    image = cv2.imread(imgfiles[0])
+    frame_source = _to_frame_source(imagedir)
+    image = frame_source.get_frame(0, rgb=False)
 
     h0, w0, _ = image.shape
     focal = np.max([h0, w0])
@@ -73,11 +83,8 @@ def est_calib(imagedir):
 
 def get_dimention(imagedir):
     """ Get proper image dimension for DROID """
-    if isinstance(imagedir, list):
-        imgfiles = imagedir
-    else:
-        imgfiles = sorted(glob(f'{imagedir}/*.jpg'))
-    image = cv2.imread(imgfiles[0])
+    frame_source = _to_frame_source(imagedir)
+    image = frame_source.get_frame(0, rgb=False)
 
     h0, w0, _ = image.shape
     h1 = int(h0 * np.sqrt((384 * 512) / (h0 * w0)))
@@ -99,16 +106,13 @@ def image_stream(imagedir, calib, stride, max_frame=None):
     K[1,1] = fy
     K[1,2] = cy
 
-    if isinstance(imagedir, list):
-        image_list = imagedir
-    else:
-        image_list = sorted(glob(f'{imagedir}/*.jpg'))
-    image_list = image_list[::stride]
+    frame_source = _to_frame_source(imagedir)
+    frame_indices = list(range(0, len(frame_source), stride))
     if max_frame is not None:
-        image_list = image_list[:max_frame]
+        frame_indices = frame_indices[:max_frame]
 
-    for t, imfile in enumerate(image_list):
-        image = cv2.imread(imfile)
+    for frame_idx in frame_indices:
+        image = frame_source.get_frame(frame_idx, rgb=False)
         if len(calib) > 4:
             image = cv2.undistort(image, K, calib[4:])
 
@@ -124,7 +128,7 @@ def image_stream(imagedir, calib, stride, max_frame=None):
         intrinsics[0::2] *= (w1 / w0)
         intrinsics[1::2] *= (h1 / h0)
 
-        yield t, image[None], intrinsics
+        yield frame_idx, image[None], intrinsics
 
 
 def run_slam(imagedir, masks, calib=None, depth=None, stride=1,  
@@ -140,18 +144,18 @@ def run_slam(imagedir, masks, calib=None, depth=None, stride=1,
     if calib is None:
         calib = est_calib(imagedir)
 
-    for (t, image, intrinsics) in tqdm(image_stream(imagedir, calib, stride)):
+    for t, (frame_idx, image, intrinsics) in enumerate(tqdm(image_stream(imagedir, calib, stride))):
 
         if droid is None:
             args.image_size = [image.shape[2], image.shape[3]]
             droid = Droid(args)
-        
+
         img_msk = img_msks[t]
         conf_msk = conf_msks[t]
         image = image * (img_msk < 0.5)
         # cv2.imwrite('debug.png', image[0].permute(1, 2, 0).numpy())
 
-        droid.track(t, image, intrinsics=intrinsics, depth=depth, mask=conf_msk)  
+        droid.track(frame_idx, image, intrinsics=intrinsics, depth=depth, mask=conf_msk)
 
     traj = droid.terminate(image_stream(imagedir, calib, stride))
 
@@ -168,13 +172,13 @@ def run_droid_slam(imagedir, calib=None, depth=None, stride=1,
     if calib is None:
         calib = est_calib(imagedir)
 
-    for (t, image, intrinsics) in tqdm(image_stream(imagedir, calib, stride)):
+    for (frame_idx, image, intrinsics) in tqdm(image_stream(imagedir, calib, stride)):
 
         if droid is None:
             args.image_size = [image.shape[2], image.shape[3]]
             droid = Droid(args)
-        
-        droid.track(t, image, intrinsics=intrinsics, depth=depth)  
+
+        droid.track(frame_idx, image, intrinsics=intrinsics, depth=depth)
 
     traj = droid.terminate(image_stream(imagedir, calib, stride))
 
@@ -218,15 +222,15 @@ def test_slam(imagedir, img_msks, conf_msks, calib, stride=10, max_frame=50):
     args.frontend_thresh = 10
     droid = None
 
-    for (t, image, intrinsics) in image_stream(imagedir, calib, stride, max_frame):
+    for t, (frame_idx, image, intrinsics) in enumerate(image_stream(imagedir, calib, stride, max_frame)):
         if droid is None:
             args.image_size = [image.shape[2], image.shape[3]]
             droid = Droid(args)
-        
+
         img_msk = img_msks[t]
         conf_msk = conf_msks[t]
         image = image * (img_msk < 0.5)
-        droid.track(t, image, intrinsics=intrinsics, mask=conf_msk)  
+        droid.track(frame_idx, image, intrinsics=intrinsics, mask=conf_msk)
 
     reprojection_error = droid.compute_error()
     del droid

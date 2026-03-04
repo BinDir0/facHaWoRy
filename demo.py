@@ -30,7 +30,7 @@ if __name__ == '__main__':
         import os
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
-    start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
+    start_idx, end_idx, seq_folder, frame_source = detect_track_video(args)
 
     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
 
@@ -104,18 +104,15 @@ if __name__ == '__main__':
         output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         if not os.path.exists(output_pth):
             os.makedirs(output_pth)
-        image_names = imgfiles[vis_start:vis_end]
-        print(f"vis {vis_start} to {vis_end}")
-        video_path = run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end], interactive=not args.headless)
+        video_path = run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, frame_source=frame_source, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end], interactive=not args.headless)
         if args.headless and video_path:
             print(f"Video saved to: {video_path}")
     elif args.vis_mode == 'cam':
         output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         if not os.path.exists(output_pth):
             os.makedirs(output_pth)
-        image_names = imgfiles[vis_start:vis_end]
         print(f"vis {vis_start} to {vis_end}")
-        video_path = run_vis2_on_video_cam(left_dict, right_dict, output_pth, img_focal, image_names, R_w2c=R_w2c_sla_all[vis_start:vis_end], t_w2c=t_w2c_sla_all[vis_start:vis_end], interactive=not args.headless)
+        video_path = run_vis2_on_video_cam(left_dict, right_dict, output_pth, img_focal, frame_source=frame_source, R_w2c=R_w2c_sla_all[vis_start:vis_end], t_w2c=t_w2c_sla_all[vis_start:vis_end], interactive=not args.headless)
         if args.headless and video_path:
             print(f"Video saved to: {video_path}")
 

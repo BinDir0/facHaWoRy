@@ -18,26 +18,24 @@ else:
             pass
 
 
-def detect_track(imgfiles, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4):
+def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4):
     """
     Detect and track hands in video frames.
 
     Args:
-        imgfiles: List of image file paths
+        frame_source: Frame source object that yields BGR frames
         thresh: Base confidence threshold for detection
         edge_margin_ratio: Ratio of image size to define edge region (default 0.1 = 10%)
         min_edge_conf: Minimum confidence required for detections near edges
     """
     hand_det_model = YOLO('./weights/external/detector.pt')
 
-    # Run
     boxes_ = []
     tracks = {}
     fallback_counter = 0  # Global counter for unique fallback IDs
     track_last_seen = {}  # Track when each track was last seen with good quality
 
-    for t, imgpath in enumerate(tqdm(imgfiles)):
-        img_cv2 = cv2.imread(imgpath)
+    for t, img_cv2 in tqdm(frame_source.iter_frames(rgb=False), total=len(frame_source)):
         img_h, img_w = img_cv2.shape[:2]
 
         # Define edge regions
@@ -60,6 +58,7 @@ def detect_track(imgfiles, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4)
                     track_id = [-1] * len(boxes)
 
                 boxes = np.hstack([boxes, confs[:, None]])
+                boxes_.append(boxes)
                 find_right = False
                 find_left = False
                 for idx, box in enumerate(boxes):

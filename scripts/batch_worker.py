@@ -13,7 +13,6 @@ import joblib
 import numpy as np
 import torch
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -95,9 +94,6 @@ def validate_stage_output(stage: str, seq_folder: Path, start_idx: int, end_idx:
     if stage == "detect_track":
         assert (tracks_dir / "model_boxes.npy").exists(), "model_boxes.npy missing"
         assert (tracks_dir / "model_tracks.npy").exists(), "model_tracks.npy missing"
-        img_dir = seq_folder / "extracted_images"
-        assert img_dir.exists(), "extracted_images missing"
-        assert len(list(img_dir.glob("*.jpg"))) > 0, "no extracted frames"
         return
 
     if stage == "motion":
@@ -158,8 +154,7 @@ def validate_stage_output_fast(stage: str, seq_folder: Path, start_idx: int, end
     if stage == "detect_track":
         return (
             (tracks_dir / "model_boxes.npy").exists() and
-            (tracks_dir / "model_tracks.npy").exists() and
-            (seq_folder / "extracted_images").exists()
+            (tracks_dir / "model_tracks.npy").exists()
         )
 
     if stage == "motion":
@@ -190,6 +185,7 @@ def build_stage_args(ns):
     args.checkpoint = ns.checkpoint
     args.infiller_weight = ns.infiller_weight
     args.chunk_batch_size = ns.chunk_batch_size
+    args.frame_backend = ns.frame_backend
     args.vis_mode = "world"
     args.skip_vis = True
     return args
@@ -263,6 +259,7 @@ def get_parser():
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")
+    parser.add_argument("--frame_backend", type=str, default="decord", choices=["decord", "opencv"])
     return parser
 
 

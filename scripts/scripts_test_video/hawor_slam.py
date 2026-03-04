@@ -2,20 +2,18 @@ import math
 import sys
 import os
 
-from natsort import natsorted
-
 sys.path.insert(0, os.path.dirname(__file__) + '/../..')
 
 import argparse
+from glob import glob
 from tqdm import tqdm
 import numpy as np
 import torch
 import cv2
-from PIL import Image
-from glob import glob
 from pycocotools import mask as masktool
 from lib.pipeline.masked_droid_slam import *
 from lib.pipeline.est_scale import *
+from lib.pipeline.frame_source import build_frame_source
 from hawor.utils.process import block_print, enable_print
 
 sys.path.insert(0, os.path.dirname(__file__) + '/../../thirdparty/Metric3D')
@@ -52,10 +50,10 @@ def hawor_slam(args, start_idx, end_idx):
     os.makedirs(seq_folder, exist_ok=True)
     video_folder = os.path.join(video_root, video)
 
-    img_folder = f'{video_folder}/extracted_images'
-    imgfiles = natsorted(glob(f'{img_folder}/*.jpg'))
+    frame_backend = getattr(args, 'frame_backend', 'decord')
+    frame_source, _ = build_frame_source(file, backend=frame_backend)
 
-    first_img = cv2.imread(imgfiles[0])
+    first_img = frame_source.get_frame(0, rgb=False)
     height, width, _ = first_img.shape
     
     print(f'Running slam on {video_folder} ...')
@@ -79,12 +77,12 @@ def hawor_slam(args, start_idx, end_idx):
             focal = 600
             with open(os.path.join(video_folder, 'est_focal.txt'), 'w') as file:
                 file.write(str(focal))
-    calib = np.array(est_calib(imgfiles)) # [focal, focal, cx, cy]
+    calib = np.array(est_calib(frame_source)) # [focal, focal, cx, cy]
     center = calib[2:]        
     calib[:2] = focal
     
     # Droid-slam with masking
-    droid, traj = run_slam(imgfiles, masks=masks, calib=calib)
+    droid, traj = run_slam(frame_source, masks=masks, calib=calib)
     n = droid.video.counter.value
     tstamp = droid.video.tstamp.cpu().int().numpy()[:n]
     disps = droid.video.disps_up.cpu().numpy()[:n]
@@ -102,9 +100,10 @@ def hawor_slam(args, start_idx, end_idx):
 
     print('Predicting Metric Depth ...')
     pred_depths = []
-    H, W = get_dimention(imgfiles)
+    H, W = get_dimention(frame_source)
     for t in tqdm(tstamp):
-        pred_depth = metric(imgfiles[t], calib)
+        frame = frame_source.get_frame(int(t), rgb=True)
+        pred_depth = metric(frame, calib)
         pred_depth = cv2.resize(pred_depth, (W, H))
         pred_depths.append(pred_depth)
 
@@ -133,14 +132,22 @@ def hawor_slam(args, start_idx, end_idx):
     # Save results
     os.makedirs(f"{seq_folder}/SLAM", exist_ok=True)
     save_path = f'{seq_folder}/SLAM/hawor_slam_w_scale_{start_idx}_{end_idx}.npz'
-    np.savez(save_path, 
-            tstamp=tstamp, disps=disps, traj=traj, 
+    np.savez(save_path,
+            tstamp=tstamp, disps=disps, traj=traj,
             img_focal=focal, img_center=calib[-2:],
-            scale=median_s)    
+            scale=median_s)
 
 
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--img_focal", type=float)
+    parser.add_argument("--video_path", type=str, default='')
+    parser.add_argument("--input_type", type=str, default='file')
+    parser.add_argument("--frame_backend", type=str, default='decord', choices=['decord', 'opencv'])
+    args = parser.parse_args()
 
-
-
-
+    # Need detect_track first to get track indices
+    from scripts.scripts_test_video.detect_track_video import detect_track_video
+    start_idx, end_idx, _, _ = detect_track_video(args)
+    hawor_slam(args, start_idx, end_idx)
 

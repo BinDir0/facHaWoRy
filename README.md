@@ -89,10 +89,11 @@ python scripts/batch_infer.py \
   --video_dir /path/to/videos \
   --gpus 0,1,2,3,4,5,6,7
 
-# Process videos from a list file
+# Process videos from a list file (decord on-the-fly decode, fallback to opencv if decord unavailable)
 python scripts/batch_infer.py \
   --video_list videos.txt \
-  --gpus 0,1,2,3,4,5,6,7
+  --gpus 0,1,2,3,4,5,6,7 \
+  --frame_backend decord
 
 # Custom configuration with retries
 python scripts/batch_infer.py \
@@ -104,6 +105,8 @@ python scripts/batch_infer.py \
 
 **Key features:**
 - Parallel processing across multiple GPUs (1 video per GPU)
+- Unified on-the-fly frame decode (no `extracted_images/*.jpg` dependency)
+- Selectable decode backend via `--frame_backend {decord|opencv}` (default: `decord`)
 - Automatic resume from existing outputs (use `--no-resume` to force rerun)
 - Per-stage retry logic (default: 2 retries)
 - Structured logging and progress tracking in `batch_runs/<timestamp>/`

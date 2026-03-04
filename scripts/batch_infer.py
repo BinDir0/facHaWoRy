@@ -68,6 +68,7 @@ class BatchScheduler:
         infiller_weight: str,
         img_focal: Optional[float],
         chunk_batch_size: int,
+        frame_backend: str,
     ):
         self.video_paths = video_paths
         self.gpus = gpus
@@ -79,6 +80,7 @@ class BatchScheduler:
         self.infiller_weight = infiller_weight
         self.img_focal = img_focal
         self.chunk_batch_size = chunk_batch_size
+        self.frame_backend = frame_backend
 
         self.log_dir = run_dir / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +143,7 @@ class BatchScheduler:
         if self.img_focal is not None:
             cmd.extend(["--img_focal", str(self.img_focal)])
         cmd.extend(["--chunk_batch_size", str(self.chunk_batch_size)])
+        cmd.extend(["--frame_backend", self.frame_backend])
         if self.resume:
             cmd.append("--resume")
 
@@ -408,6 +411,13 @@ def get_parser():
         help="Number of 16-frame chunks processed per forward in HAWOR motion stage",
     )
     parser.add_argument(
+        "--frame_backend",
+        type=str,
+        default="decord",
+        choices=["decord", "opencv"],
+        help="Frame decode backend",
+    )
+    parser.add_argument(
         "--start",
         type=int,
         default=0,
@@ -474,6 +484,7 @@ def main():
     print(f"Stages: {stages}")
     print(f"Max retries: {args.retries}")
     print(f"Chunk batch size (motion): {args.chunk_batch_size}")
+    print(f"Frame backend: {args.frame_backend}")
     print(f"Resume: {args.resume}")
     print(f"Run directory: {run_dir}")
     print()
@@ -489,6 +500,7 @@ def main():
         infiller_weight=args.infiller_weight,
         img_focal=args.img_focal,
         chunk_batch_size=args.chunk_batch_size,
+        frame_backend=args.frame_backend,
     )
 
     success = scheduler.run()

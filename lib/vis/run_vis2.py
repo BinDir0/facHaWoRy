@@ -36,9 +36,12 @@ def camera_marker_geometry(radius, height):
     return vertices, faces, face_colors
 
 
-def run_vis2_on_video(res_dict, res_dict2, output_pth, focal_length, image_names, R_c2w=None, t_c2w=None, interactive=True):
-    
-    img0 = cv2.imread(image_names[0])
+def run_vis2_on_video(res_dict, res_dict2, output_pth, focal_length, image_names=None, frame_source=None, R_c2w=None, t_c2w=None, interactive=True):
+
+    if frame_source is not None:
+        img0 = frame_source.get_frame(0, rgb=False)
+    else:
+        img0 = cv2.imread(image_names[0])
     height, width, _ = img0.shape
 
     world_mano = {}
@@ -142,9 +145,12 @@ def run_vis2_on_video(res_dict, res_dict2, output_pth, focal_length, image_names
         viewer.render_seq(batch, out_folder=os.path.join(output_pth, 'aitviewer'))
         return os.path.join(output_pth, 'aitviewer', "video_0.mp4")
 
-def run_vis2_on_video_cam(res_dict, res_dict2, output_pth, focal_length, image_names, R_w2c=None, t_w2c=None, interactive=True):
-    
-    img0 = cv2.imread(image_names[0])
+def run_vis2_on_video_cam(res_dict, res_dict2, output_pth, focal_length, image_names=None, frame_source=None, R_w2c=None, t_w2c=None, interactive=True):
+
+    if frame_source is not None:
+        img0 = frame_source.get_frame(0, rgb=False)
+    else:
+        img0 = cv2.imread(image_names[0])
     height, width, _ = img0.shape
 
     world_mano = {}
