@@ -435,6 +435,7 @@ def get_parser():
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")
+    parser.add_argument("--frame_backend", type=str, default="decord", choices=["decord", "opencv"], help="Frame decode backend")
     parser.add_argument("--video_list", type=str, help="Optional file with one video path per line for persistent worker mode")
     parser.add_argument("--persistent_worker", action="store_true", help="Run as long-lived stage worker for multiple videos")
     return parser
