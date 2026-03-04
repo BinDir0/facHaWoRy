@@ -67,6 +67,11 @@ def main():
     parser.add_argument("--stages", default="detect_track,motion,slam,infiller")
     parser.add_argument("--run_root", default="./batch_runs/perf_tests")
     parser.add_argument("--python_bin", default=sys.executable)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force rerun by disabling resume in batch_infer",
+    )
     args = parser.parse_args()
 
     all_videos = read_video_list(Path(args.video_list))
@@ -93,6 +98,9 @@ def main():
         "--infiller_weight", args.infiller_weight,
         "--run_dir", str(run_dir / "batch_run"),
     ]
+
+    if args.force:
+        cmd.append("--no-resume")
 
     print("=== Running perf test ===")
     print("Command:", " ".join(cmd))
@@ -123,6 +131,7 @@ def main():
         "num_videos": args.num_videos,
         "gpu": args.gpu,
         "chunk_batch_size": args.chunk_batch_size,
+        "force": args.force,
         "stages": args.stages,
         "completed_from_status": completed,
         "failed_from_status": failed,
