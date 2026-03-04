@@ -183,6 +183,7 @@ class WorkerRuntime:
         img_focal: float = None,
         input_type: str = "file",
         chunk_batch_size: int = 4,
+        metric3d_batch_size: int = 8,
         frame_backend: str = "decord",
     ):
         self.gpu = gpu
@@ -191,6 +192,7 @@ class WorkerRuntime:
         self.img_focal = img_focal
         self.input_type = input_type
         self.chunk_batch_size = chunk_batch_size
+        self.metric3d_batch_size = metric3d_batch_size
         self.frame_backend = frame_backend
 
         self.detector_runner = None
@@ -212,6 +214,7 @@ class WorkerRuntime:
         args.checkpoint = self.checkpoint
         args.infiller_weight = self.infiller_weight
         args.chunk_batch_size = self.chunk_batch_size
+        args.metric3d_batch_size = self.metric3d_batch_size
         args.frame_backend = self.frame_backend
         args.vis_mode = "world"
         args.skip_vis = True
@@ -291,7 +294,7 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns):
             motion_runner=runtime.motion_runner,
         )
     elif ns.stage == "slam":
-        hawor_slam(stage_args, start_idx, end_idx, metric_runner=runtime.metric_runner)
+        hawor_slam(stage_args, start_idx, end_idx, metric_runner=runtime.metric_runner, metric3d_batch_size=ns.metric3d_batch_size)
     elif ns.stage == "infiller":
         tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
         frame_chunks_all = joblib.load(tracks_dir / "frame_chunks_all.npy")
@@ -403,7 +406,7 @@ def run_stage(ns):
     if ns.stage == "motion":
         hawor_motion_estimation(stage_args, start_idx, end_idx, str(seq_folder))
     elif ns.stage == "slam":
-        hawor_slam(stage_args, start_idx, end_idx)
+        hawor_slam(stage_args, start_idx, end_idx, metric3d_batch_size=ns.metric3d_batch_size)
     elif ns.stage == "infiller":
         tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
         frame_chunks_all = joblib.load(tracks_dir / "frame_chunks_all.npy")
@@ -432,6 +435,7 @@ def get_parser():
     parser.add_argument("--infiller_weight", type=str, default="./weights/hawor/checkpoints/infiller.pt")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--chunk_batch_size", type=int, default=4)
+    parser.add_argument("--metric3d_batch_size", type=int, default=8, help="Batch size for Metric3D depth estimation")
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")

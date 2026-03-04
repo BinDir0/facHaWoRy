@@ -157,6 +157,89 @@ class Metric3D:
         
         return cfg
     
+    @torch.no_grad()
+    def batch_inference(
+        self,
+        rgb_images: List[np.ndarray],
+        intrinsic: Union[str, Path, np.ndarray],
+        d_max: Optional[float] = 300,
+        d_min: Optional[float] = 0,
+    ) -> List[np.ndarray]:
+        """
+        Batch inference for multiple images with the same intrinsic.
+
+        Args:
+            rgb_images: List of RGB images (numpy arrays)
+            intrinsic: Camera intrinsic parameters
+            d_max: Maximum depth threshold
+            d_min: Minimum depth threshold
+
+        Returns:
+            List of predicted depth maps
+        """
+        if isinstance(intrinsic, (str, Path)):
+            intrinsic = np.loadtxt(intrinsic)
+        intrinsic = intrinsic[:4]
+
+        # Preprocess all images
+        batch_inputs = []
+        batch_cam_models = []
+        batch_pads = []
+        batch_scales = []
+        batch_ori_shapes = []
+
+        for rgb_image in rgb_images:
+            h, w = rgb_image.shape[:2]
+            rgb_input, cam_models_stacks, pad, label_scale_factor = \
+                transform_test_data_scalecano(rgb_image, intrinsic, self.cfg_.data_basic)
+            batch_inputs.append(rgb_input)
+            batch_cam_models.append(cam_models_stacks)
+            batch_pads.append(pad)
+            batch_scales.append(label_scale_factor)
+            batch_ori_shapes.append([h, w])
+
+        # Stack inputs into batch
+        batch_tensor = torch.stack(batch_inputs, dim=0)
+
+        # Predict depth for the entire batch
+        normalize_scale = self.cfg_.data_basic.depth_range[1]
+
+        # Process batch through model
+        pred_depths_batch = []
+        for i in range(len(rgb_images)):
+            pred_depth, _ = get_prediction(
+                model=self.model_,
+                input=batch_tensor[i:i+1],
+                cam_model=batch_cam_models[i],
+                pad_info=batch_pads[i],
+                scale_info=batch_scales[i],
+                gt_depth=None,
+                normalize_scale=normalize_scale,
+                ori_shape=batch_ori_shapes[i],
+            )
+            pred_depths_batch.append(pred_depth)
+
+        # Post-process each depth map
+        results = []
+        input_size = (616, 1064)
+        for i, (pred_depth, rgb_image) in enumerate(zip(pred_depths_batch, rgb_images)):
+            h, w = rgb_image.shape[:2]
+            scale = min(input_size[0] / h, input_size[1] / w)
+            pad = batch_pads[i]
+
+            pred_depth = pred_depth.squeeze().cpu().numpy()
+            pred_depth[pred_depth > d_max] = 0
+            pred_depth[pred_depth < d_min] = 0
+
+            pred_depth = pred_depth[pad[0]:pred_depth.shape[0] - pad[1], pad[2]:pred_depth.shape[1] - pad[3]]
+
+            canonical_to_real_scale = intrinsic[0] * scale / 1000.0
+            pred_depth = pred_depth * canonical_to_real_scale
+
+            results.append(pred_depth)
+
+        return results
+
     @staticmethod
     def gray_to_colormap(depth: np.ndarray) -> np.ndarray:
         return gray_to_colormap(depth)

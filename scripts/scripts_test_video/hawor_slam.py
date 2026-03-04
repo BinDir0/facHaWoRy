@@ -48,7 +48,7 @@ def build_metric3d_runner(weight_path='thirdparty/Metric3D/weights/metric_depth_
     return metric
 
 
-def hawor_slam(args, start_idx, end_idx, metric_runner=None):
+def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=8):
     # File and folders
     file = args.video_path
     video_root = os.path.dirname(file)
@@ -106,11 +106,26 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None):
     print('Predicting Metric Depth ...')
     pred_depths = []
     H, W = get_dimention(frame_source)
-    for t in tqdm(tstamp):
-        frame = frame_source.get_frame(int(t), rgb=True)
-        pred_depth = metric(frame, calib)
-        pred_depth = cv2.resize(pred_depth, (W, H))
-        pred_depths.append(pred_depth)
+
+    # Batch processing for Metric3D
+    num_frames = len(tstamp)
+    for batch_start in tqdm(range(0, num_frames, metric3d_batch_size), desc="Metric3D batches"):
+        batch_end = min(batch_start + metric3d_batch_size, num_frames)
+        batch_indices = tstamp[batch_start:batch_end]
+
+        # Load batch of frames
+        batch_frames = []
+        for t in batch_indices:
+            frame = frame_source.get_frame(int(t), rgb=True)
+            batch_frames.append(frame)
+
+        # Batch inference
+        batch_depths = metric.batch_inference(batch_frames, calib)
+
+        # Resize and append results
+        for pred_depth in batch_depths:
+            pred_depth = cv2.resize(pred_depth, (W, H))
+            pred_depths.append(pred_depth)
 
     ##### Estimate Metric Scale #####
     print('Estimating Metric Scale ...')
