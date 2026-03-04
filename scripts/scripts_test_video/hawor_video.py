@@ -42,22 +42,22 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     model = model.to(device)
     model.eval()
 
-    file = args.video_path
+    video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source(file, backend=frame_backend)
+    frame_source, _ = build_frame_source(video_path, backend=frame_backend)
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
     img_focal = args.img_focal
     if img_focal is None:
         try:
-            with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as file:
-                img_focal = file.read()
+            with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as f:
+                img_focal = f.read()
                 img_focal = float(img_focal)
         except:
             img_focal = 600
             print(f'No focal length provided, use default {img_focal}')
-            with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as file:
-                file.write(str(img_focal))
+            with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as f:
+                f.write(str(img_focal))
     
     tid = np.array([tr for tr in tracks])
 
@@ -66,7 +66,7 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
         frame_chunks_all = joblib.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
         return frame_chunks_all, img_focal
 
-    print(f'Running hawor on {os.path.basename(file)} ...')
+    print(f'Running hawor on {os.path.basename(video_path)} ...')
 
     left_trk = []
     right_trk = []
@@ -262,10 +262,10 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
     filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
     filling_model.eval()
 
-    file = args.video_path
+    video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source(file, backend=frame_backend)
-    seq_folder = os.path.join(os.path.dirname(file), os.path.basename(file).split('.')[0])
+    frame_source, _ = build_frame_source(video_path, backend=frame_backend)
+    seq_folder = os.path.join(os.path.dirname(video_path), os.path.basename(video_path).split('.')[0])
 
     # Previous steps
     num_frames = len(frame_source)
