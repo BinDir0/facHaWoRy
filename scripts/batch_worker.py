@@ -174,6 +174,72 @@ def validate_stage_output_fast(stage: str, seq_folder: Path, start_idx: int, end
     return False
 
 
+class WorkerRuntime:
+    def __init__(
+        self,
+        gpu: str,
+        checkpoint: str,
+        infiller_weight: str,
+        img_focal: float = None,
+        input_type: str = "file",
+        chunk_batch_size: int = 4,
+        frame_backend: str = "decord",
+    ):
+        self.gpu = gpu
+        self.checkpoint = checkpoint
+        self.infiller_weight = infiller_weight
+        self.img_focal = img_focal
+        self.input_type = input_type
+        self.chunk_batch_size = chunk_batch_size
+        self.frame_backend = frame_backend
+
+        self.detector_runner = None
+        self.motion_runner = None
+        self.metric_runner = None
+        self.infiller_runner = None
+
+        if self.gpu is not None and self.gpu != "":
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
+
+    def build_stage_args(self, video_path: str):
+        class StageArgs:
+            pass
+
+        args = StageArgs()
+        args.img_focal = self.img_focal
+        args.video_path = video_path
+        args.input_type = self.input_type
+        args.checkpoint = self.checkpoint
+        args.infiller_weight = self.infiller_weight
+        args.chunk_batch_size = self.chunk_batch_size
+        args.frame_backend = self.frame_backend
+        args.vis_mode = "world"
+        args.skip_vis = True
+        return args
+
+    def ensure_runner(self, stage: str):
+        if stage == "detect_track" and self.detector_runner is None:
+            from ultralytics import YOLO
+
+            self.detector_runner = YOLO('./weights/external/detector.pt')
+
+        if stage == "motion" and self.motion_runner is None:
+            from scripts.scripts_test_video.hawor_video import build_motion_runner
+
+            self.motion_runner = build_motion_runner(self.checkpoint)
+
+        if stage == "slam" and self.metric_runner is None:
+            from scripts.scripts_test_video.hawor_slam import build_metric3d_runner
+
+            self.metric_runner = build_metric3d_runner()
+
+        if stage == "infiller" and self.infiller_runner is None:
+            from scripts.scripts_test_video.hawor_video import build_infiller_runner
+
+            self.infiller_runner = build_infiller_runner(self.infiller_weight)
+
+
+
 def build_stage_args(ns):
     class StageArgs:
         pass
@@ -189,6 +255,116 @@ def build_stage_args(ns):
     args.vis_mode = "world"
     args.skip_vis = True
     return args
+
+
+def run_stage_with_runtime(runtime: WorkerRuntime, ns):
+    stage_args = runtime.build_stage_args(ns.video_path)
+    seq_folder = get_seq_folder(ns.video_path)
+
+    if ns.resume and not ns.force and is_stage_complete(ns.stage, seq_folder):
+        return {
+            "status": "skipped",
+            "reason": "existing_valid_output",
+        }
+
+    from scripts.scripts_test_video.detect_track_video import detect_track_video
+    from scripts.scripts_test_video.hawor_slam import hawor_slam
+    from scripts.scripts_test_video.hawor_video import run_infiller_for_video, run_motion_for_video
+
+    runtime.ensure_runner(ns.stage)
+
+    if ns.stage == "detect_track":
+        start_idx, end_idx, _, _ = detect_track_video(
+            stage_args,
+            detector_runner=runtime.detector_runner,
+            force=ns.force,
+        )
+    else:
+        start_idx, end_idx = get_track_range(seq_folder)
+
+    if ns.stage == "motion":
+        run_motion_for_video(
+            stage_args,
+            start_idx,
+            end_idx,
+            str(seq_folder),
+            motion_runner=runtime.motion_runner,
+        )
+    elif ns.stage == "slam":
+        hawor_slam(stage_args, start_idx, end_idx, metric_runner=runtime.metric_runner)
+    elif ns.stage == "infiller":
+        tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+        frame_chunks_all = joblib.load(tracks_dir / "frame_chunks_all.npy")
+        run_infiller_for_video(
+            stage_args,
+            start_idx,
+            end_idx,
+            frame_chunks_all,
+            infiller_runner=runtime.infiller_runner,
+        )
+    elif ns.stage == "detect_track":
+        pass
+    else:
+        raise ValueError(f"Unknown stage: {ns.stage}")
+
+    validate_stage_output(ns.stage, seq_folder, start_idx, end_idx)
+    return {
+        "status": "success",
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+    }
+
+
+def worker_runtime_loop(ns):
+    set_determinism(ns.seed)
+    runtime = WorkerRuntime(
+        gpu=ns.gpu,
+        checkpoint=ns.checkpoint,
+        infiller_weight=ns.infiller_weight,
+        img_focal=ns.img_focal,
+        input_type=ns.input_type,
+        chunk_batch_size=ns.chunk_batch_size,
+        frame_backend=ns.frame_backend,
+    )
+
+    with open(ns.video_list) as f:
+        video_paths = [line.strip() for line in f if line.strip()]
+
+    overall_success = True
+    for video_path in video_paths:
+        task_ns = argparse.Namespace(**vars(ns))
+        task_ns.video_path = video_path
+
+        common_fields = {
+            "video": task_ns.video_path,
+            "stage": task_ns.stage,
+            "gpu": task_ns.gpu,
+        }
+        started_at = time.time()
+        emit_event("stage_start", **common_fields)
+        try:
+            result = run_stage_with_runtime(runtime, task_ns)
+            emit_event(
+                "stage_end",
+                **common_fields,
+                status=result.get("status", "success"),
+                elapsed_sec=round(time.time() - started_at, 3),
+                reason=result.get("reason"),
+                start_idx=result.get("start_idx"),
+                end_idx=result.get("end_idx"),
+            )
+        except Exception as err:
+            overall_success = False
+            emit_event(
+                "stage_end",
+                **common_fields,
+                status="failed",
+                elapsed_sec=round(time.time() - started_at, 3),
+                error=str(err),
+            )
+            traceback.print_exc()
+
+    return overall_success
 
 
 def emit_event(event: str, **kwargs):
@@ -248,7 +424,7 @@ def run_stage(ns):
 def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", required=True, choices=STAGES)
-    parser.add_argument("--video_path", required=True, type=str)
+    parser.add_argument("--video_path", type=str)
     parser.add_argument("--gpu", default="", type=str)
     parser.add_argument("--img_focal", type=float)
     parser.add_argument("--input_type", type=str, default="file")
@@ -259,12 +435,20 @@ def get_parser():
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")
-    parser.add_argument("--frame_backend", type=str, default="decord", choices=["decord", "opencv"])
+    parser.add_argument("--video_list", type=str, help="Optional file with one video path per line for persistent worker mode")
+    parser.add_argument("--persistent_worker", action="store_true", help="Run as long-lived stage worker for multiple videos")
     return parser
 
 
 if __name__ == "__main__":
     args = get_parser().parse_args()
+
+    if args.persistent_worker:
+        if not args.video_list:
+            raise ValueError("--video_list is required when --persistent_worker is set")
+        success = worker_runtime_loop(args)
+        sys.exit(0 if success else 1)
+
     started_at = time.time()
     common_fields = {
         "video": args.video_path,

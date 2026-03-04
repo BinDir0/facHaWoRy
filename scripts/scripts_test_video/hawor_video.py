@@ -34,13 +34,42 @@ def load_hawor(checkpoint_path):
     model = HAWOR.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
     return model, model_cfg
 
-
-
-def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
-    model, model_cfg = load_hawor(args.checkpoint)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+def build_motion_runner(checkpoint_path, device=None):
+    model, model_cfg = load_hawor(checkpoint_path)
+    device = device or (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
     model = model.to(device)
     model.eval()
+    return {
+        'model': model,
+        'model_cfg': model_cfg,
+        'device': device,
+    }
+
+
+def build_infiller_runner(weight_path, device=None):
+    device = device or (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+    ckpt = torch.load(weight_path, map_location=device)
+    pos_dim = 3
+    shape_dim = 10
+    num_joints = 15
+    rot_dim = (num_joints + 1) * 6 # rot6d
+    repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
+    nhead = 8 # repr_dim = 154
+    horizon = 120
+    filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
+    filling_model.to(device)
+    filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
+    filling_model.eval()
+    return {
+        'model': filling_model,
+        'device': device,
+        'horizon': horizon,
+    }
+
+
+def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None):
+    motion_runner = motion_runner or build_motion_runner(args.checkpoint)
+    model = motion_runner['model']
 
     video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
@@ -245,22 +274,16 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     joblib.dump(frame_chunks_all, f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
     return frame_chunks_all, img_focal
 
-def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
+def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
+    return run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None)
+
+
+def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_runner=None):
     # load infiller
-    weight_path = args.infiller_weight
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    ckpt = torch.load(weight_path, map_location=device)
-    pos_dim = 3
-    shape_dim = 10
-    num_joints = 15
-    rot_dim = (num_joints + 1) * 6 # rot6d
-    repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
-    nhead = 8 # repr_dim = 154
-    horizon = 120
-    filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
-    filling_model.to(device)
-    filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
-    filling_model.eval()
+    infiller_runner = infiller_runner or build_infiller_runner(args.infiller_weight)
+    filling_model = infiller_runner['model']
+    device = infiller_runner['device']
+    horizon = infiller_runner['horizon']
 
     video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
@@ -396,4 +419,7 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
     joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid], save_path)
     return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid
 
+
+def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
+    return run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_runner=None)
     

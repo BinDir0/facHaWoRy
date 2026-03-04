@@ -9,7 +9,7 @@ from lib.pipeline.frame_source import build_frame_source
 from lib.pipeline.tools import detect_track
 
 
-def detect_track_video(args):
+def detect_track_video(args, detector_runner=None, force=False):
     file = args.video_path
     root = os.path.dirname(file)
     seq = os.path.basename(file).split('.')[0]
@@ -28,14 +28,21 @@ def detect_track_video(args):
     start_idx = 0
     end_idx = len(frame_source)
 
-    if os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy'):
+    if (not force) and os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy'):
         print(f"skip track for {start_idx}_{end_idx}")
         return start_idx, end_idx, seq_folder, frame_source
     os.makedirs(f"{seq_folder}/tracks_{start_idx}_{end_idx}", exist_ok=True)
     # Increased threshold from 0.2 to 0.35 to reduce false positives
     # Especially important when hands leave frame or camera moves rapidly
     # Edge detections require even higher confidence (0.4) to avoid background objects
-    boxes_, tracks_ = detect_track(frame_source, thresh=0.35, edge_margin_ratio=0.1, min_edge_conf=0.4)
+    boxes_, tracks_ = detect_track(
+        frame_source,
+        thresh=0.35,
+        edge_margin_ratio=0.1,
+        min_edge_conf=0.4,
+        hand_det_model=detector_runner,
+        reset_tracker=True,
+    )
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy', boxes_)
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', tracks_)
 

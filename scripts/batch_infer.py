@@ -69,6 +69,9 @@ class BatchScheduler:
         img_focal: Optional[float],
         chunk_batch_size: int,
         frame_backend: str,
+        scheduler_mode: str,
+        persistent_worker: bool,
+        max_stage_retries: int,
     ):
         self.video_paths = video_paths
         self.gpus = gpus
@@ -81,6 +84,9 @@ class BatchScheduler:
         self.img_focal = img_focal
         self.chunk_batch_size = chunk_batch_size
         self.frame_backend = frame_backend
+        self.scheduler_mode = scheduler_mode
+        self.persistent_worker = persistent_worker
+        self.max_stage_retries = max_stage_retries
 
         self.log_dir = run_dir / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -161,6 +167,64 @@ class BatchScheduler:
 
         return proc.returncode, str(log_file), log_content
 
+    def run_stage_persistent_subprocess(
+        self, video_paths: List[str], stage: str, gpu: int
+    ) -> Tuple[Dict[str, bool], str]:
+        if not video_paths:
+            return {}, ""
+
+        list_file = self.run_dir / f"stage_{stage}_gpu{gpu}_videos.txt"
+        with open(list_file, "w") as f:
+            for vp in video_paths:
+                f.write(vp + "\n")
+
+        log_file = self.log_dir / f"stage_wave_{stage}_gpu{gpu}.log"
+        cmd = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "batch_worker.py"),
+            "--persistent_worker",
+            "--stage", stage,
+            "--video_list", str(list_file),
+            "--gpu", str(gpu),
+            "--checkpoint", self.checkpoint,
+            "--infiller_weight", self.infiller_weight,
+            "--chunk_batch_size", str(self.chunk_batch_size),
+            "--frame_backend", self.frame_backend,
+        ]
+        if self.img_focal is not None:
+            cmd.extend(["--img_focal", str(self.img_focal)])
+        if self.resume:
+            cmd.append("--resume")
+
+        with open(log_file, "w") as f:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                cwd=PROJECT_ROOT,
+            )
+            proc.wait()
+
+        status_by_video = {vp: False for vp in video_paths}
+        with open(log_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("event") != "stage_end":
+                    continue
+                video = obj.get("video")
+                if video not in status_by_video:
+                    continue
+                status = obj.get("status")
+                status_by_video[video] = status in ("success", "skipped")
+
+        return status_by_video, str(log_file)
+
     def verify_stage_complete(self, video_path: str, stage: str) -> bool:
         """Verify that stage output actually exists on disk (fast check)."""
         try:
@@ -175,6 +239,123 @@ class BatchScheduler:
             return is_stage_complete(stage, seq_folder, fast_check=True)
         except Exception:
             return False
+
+    def get_stage_pending_videos(self, stage: str) -> List[str]:
+        pending = []
+        for vp in self.video_paths:
+            task = self.tasks[vp]
+            if stage == self.stages[0]:
+                if task.stage_status.get(stage) in ("pending", "failed"):
+                    pending.append(vp)
+                continue
+
+            stage_idx = self.stages.index(stage)
+            prev_stage = self.stages[stage_idx - 1]
+            if task.stage_status.get(prev_stage) != "completed":
+                continue
+            if task.stage_status.get(stage) in ("pending", "failed"):
+                pending.append(vp)
+        return pending
+
+    def run_stage_wave(self, stage: str) -> Dict[str, bool]:
+        pending_videos = self.get_stage_pending_videos(stage)
+        if not pending_videos:
+            return {}
+
+        self.emit_event("wave_start", stage=stage, total=len(pending_videos))
+
+        groups = defaultdict(list)
+        for i, vp in enumerate(pending_videos):
+            gpu = self.gpus[i % len(self.gpus)]
+            groups[gpu].append(vp)
+
+        stage_results: Dict[str, bool] = {}
+        for gpu, videos in groups.items():
+            for vp in videos:
+                task = self.tasks[vp]
+                task.stage_status[stage] = "running"
+            self.save_status()
+
+            result_map, log_file = self.run_stage_persistent_subprocess(videos, stage, gpu)
+            for vp in videos:
+                ok = result_map.get(vp, False)
+                task = self.tasks[vp]
+                if ok:
+                    task.stage_status[stage] = "completed"
+                    self.emit_event("stage_success", video=vp, stage=stage, gpu=gpu, log_file=log_file)
+                else:
+                    task.stage_status[stage] = "failed"
+                    self.emit_event("stage_failure", video=vp, stage=stage, gpu=gpu, log_file=log_file)
+                stage_results[vp] = ok
+            self.save_status()
+
+        self.emit_event(
+            "wave_end",
+            stage=stage,
+            success=sum(1 for ok in stage_results.values() if ok),
+            failed=sum(1 for ok in stage_results.values() if not ok),
+        )
+        return stage_results
+
+    def run_stage_wave_with_retries(self, stage: str) -> Dict[str, bool]:
+        final_results: Dict[str, bool] = {}
+        for attempt in range(self.max_stage_retries + 1):
+            stage_results = self.run_stage_wave(stage)
+            if not stage_results:
+                break
+
+            for vp, ok in stage_results.items():
+                final_results[vp] = ok
+                self.tasks[vp].retry_count[stage] = attempt
+
+            failed = [vp for vp, ok in stage_results.items() if not ok]
+            if not failed:
+                break
+            if attempt < self.max_stage_retries:
+                self.emit_event("wave_retry", stage=stage, attempt=attempt + 1, failed=len(failed))
+
+        return final_results
+
+    def run_wave(self):
+        if self.resume:
+            self.load_status()
+
+        self.emit_event("batch_start", total_videos=len(self.video_paths), gpus=self.gpus, mode="wave")
+
+        for vp in self.video_paths:
+            task = self.tasks[vp]
+            if task.start_time is None:
+                task.start_time = datetime.now(timezone.utc).isoformat()
+
+        for stage in self.stages:
+            self.run_stage_wave_with_retries(stage)
+
+        success_count = 0
+        fail_count = 0
+        for vp in self.video_paths:
+            task = self.tasks[vp]
+            if all(task.stage_status.get(s) == "completed" for s in self.stages):
+                success_count += 1
+                if task.end_time is None:
+                    task.end_time = datetime.now(timezone.utc).isoformat()
+                self.emit_event("video_completed", video=vp)
+            else:
+                fail_count += 1
+                failed_stage = next((s for s in self.stages if task.stage_status.get(s) != "completed"), "unknown")
+                self.emit_event("video_failed", video=vp, stage=failed_stage)
+
+        self.save_status()
+        self.emit_event("batch_end", total=len(self.video_paths), success=success_count, failed=fail_count)
+
+        print(f"\n=== Batch Inference Complete ===")
+        print(f"Total videos: {len(self.video_paths)}")
+        print(f"Success: {success_count}")
+        print(f"Failed: {fail_count}")
+        print(f"Run directory: {self.run_dir}")
+        print(f"Status file: {self.status_file}")
+        print(f"Events log: {self.events_file}")
+
+        return fail_count == 0
 
     def process_video(self, video_path: str, gpu: int):
         task = self.tasks[video_path]
@@ -266,10 +447,13 @@ class BatchScheduler:
             progress_queue.put(1)  # Signal completion
 
     def run(self):
+        if self.scheduler_mode == "wave":
+            return self.run_wave()
+
         if self.resume:
             self.load_status()
 
-        self.emit_event("batch_start", total_videos=len(self.video_paths), gpus=self.gpus)
+        self.emit_event("batch_start", total_videos=len(self.video_paths), gpus=self.gpus, mode="legacy")
 
         video_queue = mp.Queue()
         result_queue = mp.Queue()
@@ -429,6 +613,24 @@ def get_parser():
         default=None,
         help="End index of video list (exclusive, None means process all)",
     )
+    parser.add_argument(
+        "--scheduler_mode",
+        type=str,
+        default="legacy",
+        choices=["legacy", "wave"],
+        help="Scheduling mode: legacy (per-video stages) or wave (global stage waves)",
+    )
+    parser.add_argument(
+        "--persistent_worker",
+        action="store_true",
+        help="Use persistent workers with model reuse (only for wave mode)",
+    )
+    parser.add_argument(
+        "--max_stage_retries",
+        type=int,
+        default=1,
+        help="Max retries per stage wave (wave mode only, default: 1)",
+    )
 
     return parser
 
@@ -482,7 +684,10 @@ def main():
     print(f"Videos to process: {len(video_paths)}")
     print(f"GPUs: {gpus}")
     print(f"Stages: {stages}")
+    print(f"Scheduler mode: {args.scheduler_mode}")
+    print(f"Persistent worker: {args.persistent_worker}")
     print(f"Max retries: {args.retries}")
+    print(f"Max stage retries (wave): {args.max_stage_retries}")
     print(f"Chunk batch size (motion): {args.chunk_batch_size}")
     print(f"Frame backend: {args.frame_backend}")
     print(f"Resume: {args.resume}")
@@ -501,6 +706,9 @@ def main():
         img_focal=args.img_focal,
         chunk_batch_size=args.chunk_batch_size,
         frame_backend=args.frame_backend,
+        scheduler_mode=args.scheduler_mode,
+        persistent_worker=args.persistent_worker,
+        max_stage_retries=args.max_stage_retries,
     )
 
     success = scheduler.run()

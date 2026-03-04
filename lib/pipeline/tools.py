@@ -18,7 +18,7 @@ else:
             pass
 
 
-def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4):
+def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4, hand_det_model=None, reset_tracker=True):
     """
     Detect and track hands in video frames.
 
@@ -27,8 +27,13 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
         thresh: Base confidence threshold for detection
         edge_margin_ratio: Ratio of image size to define edge region (default 0.1 = 10%)
         min_edge_conf: Minimum confidence required for detections near edges
+        hand_det_model: Optional preloaded YOLO detector for reuse across videos
+        reset_tracker: Reset tracker state before running current video
     """
-    hand_det_model = YOLO('./weights/external/detector.pt')
+    hand_det_model = hand_det_model or YOLO('./weights/external/detector.pt')
+
+    if reset_tracker and hasattr(hand_det_model, 'predictor') and hand_det_model.predictor is not None:
+        hand_det_model.predictor = None
 
     boxes_ = []
     tracks = {}

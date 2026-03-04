@@ -41,7 +41,14 @@ def split_list_by_interval(lst, interval=1000):
     
     return start_indices, end_indices, split_lists
 
-def hawor_slam(args, start_idx, end_idx):
+def build_metric3d_runner(weight_path='thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth'):
+    block_print()
+    metric = Metric3D(weight_path)
+    enable_print()
+    return metric
+
+
+def hawor_slam(args, start_idx, end_idx, metric_runner=None):
     # File and folders
     file = args.video_path
     video_root = os.path.dirname(file)
@@ -91,10 +98,8 @@ def hawor_slam(args, start_idx, end_idx):
     del droid
     torch.cuda.empty_cache()
 
-    # Estimate scale  
-    block_print()  
-    metric = Metric3D('thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth') 
-    enable_print() 
+    # Estimate scale
+    metric = metric_runner or build_metric3d_runner()
     min_threshold = 0.4
     max_threshold = 0.7
 
