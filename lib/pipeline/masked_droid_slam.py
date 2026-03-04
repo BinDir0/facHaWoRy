@@ -55,7 +55,13 @@ args = parser.parse_args([])
 args.stereo = False
 args.upsample = True
 args.disable_vis = True
-torch.multiprocessing.set_start_method('spawn')
+
+# Set multiprocessing start method, but only if not already set
+# This is important for persistent worker mode where the same process handles multiple videos
+try:
+    torch.multiprocessing.set_start_method('spawn')
+except RuntimeError:
+    pass  # Already set, which is fine
 
 
 def _to_frame_source(imagedir):
