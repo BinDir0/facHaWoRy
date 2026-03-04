@@ -269,8 +269,13 @@ class BatchScheduler:
                 pending.append(vp)
         return pending
 
-    def run_stage_wave_dynamic(self, stage: str) -> Dict[str, bool]:
-        """Run stage wave with dynamic load balancing across GPUs."""
+    def run_stage_wave_dynamic(self, stage: str, pbar=None) -> Dict[str, bool]:
+        """Run stage wave with dynamic load balancing across GPUs.
+
+        Args:
+            stage: Stage name to run
+            pbar: Optional tqdm progress bar to update
+        """
         pending_videos = self.get_stage_pending_videos(stage)
         if not pending_videos:
             return {}
@@ -321,6 +326,12 @@ class BatchScheduler:
 
                 stage_results[video_path] = success
                 completed += 1
+
+                # Update progress bar if provided
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix({"success": sum(1 for ok in stage_results.values() if ok), "failed": sum(1 for ok in stage_results.values() if not ok)})
+
                 self.save_status()
             except:
                 # Check if all workers are done
@@ -412,9 +423,9 @@ class BatchScheduler:
             traceback.print_exc()
             return False
 
-    def run_stage_wave(self, stage: str) -> Dict[str, bool]:
+    def run_stage_wave(self, stage: str, pbar=None) -> Dict[str, bool]:
         """Run stage wave - delegates to dynamic load balancing implementation."""
-        return self.run_stage_wave_dynamic(stage)
+        return self.run_stage_wave_dynamic(stage, pbar=pbar)
 
     def run_stage_wave_static(self, stage: str) -> Dict[str, bool]:
         """Original static load balancing (kept for reference/fallback)."""
@@ -458,10 +469,10 @@ class BatchScheduler:
         )
         return stage_results
 
-    def run_stage_wave_with_retries(self, stage: str) -> Dict[str, bool]:
+    def run_stage_wave_with_retries(self, stage: str, pbar=None) -> Dict[str, bool]:
         final_results: Dict[str, bool] = {}
         for attempt in range(self.max_stage_retries + 1):
-            stage_results = self.run_stage_wave(stage)
+            stage_results = self.run_stage_wave(stage, pbar=pbar)
             if not stage_results:
                 break
 
@@ -499,11 +510,8 @@ class BatchScheduler:
             print(f"Stage {stage_idx}/{len(self.stages)}: {stage} ({total_for_stage} videos)")
 
             with tqdm(total=total_for_stage, desc=f"  {stage}", unit="video", leave=True) as pbar:
-                # Store original run_stage_wave to track progress
-                original_results = self.run_stage_wave_with_retries(stage)
-                completed = sum(1 for ok in original_results.values() if ok)
-                pbar.update(total_for_stage)
-                pbar.set_postfix({"success": completed, "failed": total_for_stage - completed})
+                # Run stage wave with progress bar
+                original_results = self.run_stage_wave_with_retries(stage, pbar=pbar)
 
         success_count = 0
         fail_count = 0
