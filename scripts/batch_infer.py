@@ -327,8 +327,22 @@ class BatchScheduler:
             if task.start_time is None:
                 task.start_time = datetime.now(timezone.utc).isoformat()
 
-        for stage in self.stages:
-            self.run_stage_wave_with_retries(stage)
+        print(f"\n{'='*60}")
+        print(f"Stage-Wave Scheduling: {len(self.video_paths)} videos, {len(self.gpus)} GPUs")
+        print(f"{'='*60}\n")
+
+        for stage_idx, stage in enumerate(self.stages, 1):
+            pending = self.get_stage_pending_videos(stage)
+            total_for_stage = len(pending)
+
+            print(f"Stage {stage_idx}/{len(self.stages)}: {stage} ({total_for_stage} videos)")
+
+            with tqdm(total=total_for_stage, desc=f"  {stage}", unit="video", leave=True) as pbar:
+                # Store original run_stage_wave to track progress
+                original_results = self.run_stage_wave_with_retries(stage)
+                completed = sum(1 for ok in original_results.values() if ok)
+                pbar.update(total_for_stage)
+                pbar.set_postfix({"success": completed, "failed": total_for_stage - completed})
 
         success_count = 0
         fail_count = 0
@@ -347,13 +361,16 @@ class BatchScheduler:
         self.save_status()
         self.emit_event("batch_end", total=len(self.video_paths), success=success_count, failed=fail_count)
 
-        print(f"\n=== Batch Inference Complete ===")
+        print(f"\n{'='*60}")
+        print(f"Batch Inference Complete")
+        print(f"{'='*60}")
         print(f"Total videos: {len(self.video_paths)}")
         print(f"Success: {success_count}")
         print(f"Failed: {fail_count}")
         print(f"Run directory: {self.run_dir}")
         print(f"Status file: {self.status_file}")
         print(f"Events log: {self.events_file}")
+        print(f"{'='*60}\n")
 
         return fail_count == 0
 
