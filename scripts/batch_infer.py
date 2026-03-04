@@ -257,7 +257,151 @@ class BatchScheduler:
                 pending.append(vp)
         return pending
 
+    def run_stage_wave_dynamic(self, stage: str) -> Dict[str, bool]:
+        """Run stage wave with dynamic load balancing across GPUs."""
+        pending_videos = self.get_stage_pending_videos(stage)
+        if not pending_videos:
+            return {}
+
+        self.emit_event("wave_start", stage=stage, total=len(pending_videos))
+
+        # Create shared queues for dynamic load balancing
+        video_queue = mp.Queue()
+        result_queue = mp.Queue()
+
+        # Populate video queue
+        for vp in pending_videos:
+            video_queue.put(vp)
+
+        # Add sentinel values to signal workers to stop
+        for _ in self.gpus:
+            video_queue.put(None)
+
+        # Launch worker processes for each GPU
+        workers = []
+        for gpu in self.gpus:
+            p = mp.Process(
+                target=self.stage_wave_worker_dynamic,
+                args=(gpu, stage, video_queue, result_queue)
+            )
+            p.start()
+            workers.append(p)
+
+        # Collect results
+        stage_results = {}
+        completed = 0
+        total = len(pending_videos)
+
+        while completed < total:
+            try:
+                result = result_queue.get(timeout=1)
+                video_path = result["video"]
+                success = result["success"]
+                gpu = result["gpu"]
+
+                task = self.tasks[video_path]
+                if success:
+                    task.stage_status[stage] = "completed"
+                    self.emit_event("stage_success", video=video_path, stage=stage, gpu=gpu)
+                else:
+                    task.stage_status[stage] = "failed"
+                    self.emit_event("stage_failure", video=video_path, stage=stage, gpu=gpu)
+
+                stage_results[video_path] = success
+                completed += 1
+                self.save_status()
+            except:
+                # Check if all workers are done
+                if all(not w.is_alive() for w in workers):
+                    break
+
+        # Wait for all workers to finish
+        for w in workers:
+            w.join()
+
+        self.emit_event(
+            "wave_end",
+            stage=stage,
+            success=sum(1 for ok in stage_results.values() if ok),
+            failed=sum(1 for ok in stage_results.values() if not ok),
+        )
+        return stage_results
+
+    def stage_wave_worker_dynamic(self, gpu: int, stage: str, video_queue: mp.Queue, result_queue: mp.Queue):
+        """Worker process that pulls videos from queue and processes them with model reuse."""
+        # Set GPU for this worker
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
+        # Import here to avoid issues in main process
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from batch_worker import WorkerRuntime, set_determinism
+
+        # Initialize runtime once for this worker
+        set_determinism(42)
+        runtime = WorkerRuntime(
+            gpu=str(gpu),
+            checkpoint=self.checkpoint,
+            infiller_weight=self.infiller_weight,
+            img_focal=self.img_focal,
+            input_type="file",
+            chunk_batch_size=self.chunk_batch_size,
+            frame_backend=self.frame_backend,
+        )
+
+        # Ensure stage models are loaded
+        runtime.ensure_runner(stage)
+
+        # Process videos from queue
+        while True:
+            try:
+                video_path = video_queue.get(timeout=1)
+            except:
+                continue
+
+            if video_path is None:
+                break
+
+            # Process single video with runtime
+            success = self.run_single_video_with_runtime(video_path, stage, gpu, runtime)
+
+            # Report result
+            result_queue.put({
+                "video": video_path,
+                "success": success,
+                "gpu": gpu,
+            })
+
+    def run_single_video_with_runtime(self, video_path: str, stage: str, gpu: int, runtime) -> bool:
+        """Run a single stage for a single video using existing runtime."""
+        import argparse
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from batch_worker import run_stage_with_runtime, get_seq_folder, is_stage_complete
+
+        # Build args namespace
+        task_ns = argparse.Namespace()
+        task_ns.video_path = video_path
+        task_ns.stage = stage
+        task_ns.gpu = str(gpu)
+        task_ns.resume = self.resume
+        task_ns.force = False
+        task_ns.seed = 42
+
+        try:
+            result = run_stage_with_runtime(runtime, task_ns)
+            return result.get("status") in ("success", "skipped")
+        except Exception as e:
+            print(f"Error processing {video_path} on GPU {gpu}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def run_stage_wave(self, stage: str) -> Dict[str, bool]:
+        """Run stage wave - delegates to dynamic load balancing implementation."""
+        return self.run_stage_wave_dynamic(stage)
+
+    def run_stage_wave_static(self, stage: str) -> Dict[str, bool]:
+        """Original static load balancing (kept for reference/fallback)."""
+
         pending_videos = self.get_stage_pending_videos(stage)
         if not pending_videos:
             return {}
