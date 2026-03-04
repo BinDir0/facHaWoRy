@@ -6,12 +6,20 @@ import sys
 import tempfile
 import time
 import traceback
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
 import numpy as np
 import torch
+
+# Suppress common warnings to reduce output noise
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*pkg_resources.*')
+warnings.filterwarnings('ignore', message='.*timm.models.layers.*')
+warnings.filterwarnings('ignore', message='.*torch.cuda.amp.autocast.*')
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,6 +33,9 @@ os.environ["TMPDIR"] = str(SHARED_TMP_DIR)
 os.environ["TEMP"] = str(SHARED_TMP_DIR)
 os.environ["TMP"] = str(SHARED_TMP_DIR)
 tempfile.tempdir = str(SHARED_TMP_DIR)
+
+# Suppress verbose output from stage scripts
+os.environ["HAWOR_QUIET"] = "1"
 
 
 STAGES = ["detect_track", "motion", "slam", "infiller"]

@@ -8,6 +8,14 @@ sys.path.insert(0, os.path.dirname(__file__) + '/../..')
 from lib.pipeline.frame_source import build_frame_source
 from lib.pipeline.tools import detect_track
 
+# Check if we should suppress verbose output
+QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
+
+def vprint(*args, **kwargs):
+    """Print only if not in quiet mode."""
+    if not QUIET_MODE:
+        print(*args, **kwargs)
+
 
 def detect_track_video(args, detector_runner=None, force=False, detect_batch_size=1):
     file = args.video_path
@@ -16,20 +24,20 @@ def detect_track_video(args, detector_runner=None, force=False, detect_batch_siz
 
     seq_folder = f'{root}/{seq}'
     os.makedirs(seq_folder, exist_ok=True)
-    print(f'Running detect_track on {file} ...')
+    vprint(f'Running detect_track on {file} ...')
 
     backend = getattr(args, 'frame_backend', 'decord')
     frame_source, backend_used = build_frame_source(file, backend=backend)
-    print(f'Frame backend: {backend_used}')
+    vprint(f'Frame backend: {backend_used}')
 
     ##### Detection + Track #####
-    print('Detect and Track ...')
+    vprint('Detect and Track ...')
 
     start_idx = 0
     end_idx = len(frame_source)
 
     if (not force) and os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy'):
-        print(f"skip track for {start_idx}_{end_idx}")
+        vprint(f"skip track for {start_idx}_{end_idx}")
         return start_idx, end_idx, seq_folder, frame_source
     os.makedirs(f"{seq_folder}/tracks_{start_idx}_{end_idx}", exist_ok=True)
     # Increased threshold from 0.2 to 0.35 to reduce false positives

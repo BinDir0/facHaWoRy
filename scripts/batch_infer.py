@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,11 @@ from typing import Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
+# Suppress common warnings to reduce output noise
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*pkg_resources.*')
+warnings.filterwarnings('ignore', message='.*timm.models.layers.*')
 
 # Set temporary directory to shared storage instead of local /tmp
 SHARED_TMP_DIR = Path("/share_data/guantianrui/tmp")

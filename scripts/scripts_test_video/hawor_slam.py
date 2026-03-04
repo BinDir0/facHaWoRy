@@ -19,6 +19,14 @@ from hawor.utils.process import block_print, enable_print
 sys.path.insert(0, os.path.dirname(__file__) + '/../../thirdparty/Metric3D')
 from metric import Metric3D
 
+# Check if we should suppress verbose output
+QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
+
+def vprint(*args, **kwargs):
+    """Print only if not in quiet mode."""
+    if not QUIET_MODE:
+        print(*args, **kwargs)
+
 
 def get_all_mp4_files(folder_path):
     # Ensure the folder path is absolute
@@ -63,13 +71,13 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     first_img = frame_source.get_frame(0, rgb=False)
     height, width, _ = first_img.shape
     
-    print(f'Running slam on {video_folder} ...')
+    vprint(f'Running slam on {video_folder} ...')
 
     ##### Run SLAM #####
     # Use Masking
     masks = np.load(f'{video_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', allow_pickle=True)
     masks = torch.from_numpy(masks)
-    print(masks.shape)
+    vprint(masks.shape)
 
     # Camera calibration (intrinsics) for SLAM
     focal = args.img_focal
@@ -80,7 +88,7 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
                 focal = float(focal)
         except:
             
-            print('No focal length provided')
+            vprint('No focal length provided')
             focal = 600
             with open(os.path.join(video_folder, 'est_focal.txt'), 'w') as file:
                 file.write(str(focal))
@@ -93,7 +101,7 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     n = droid.video.counter.value
     tstamp = droid.video.tstamp.cpu().int().numpy()[:n]
     disps = droid.video.disps_up.cpu().numpy()[:n]
-    print('DBA errors:', droid.backend.errors)
+    vprint('DBA errors:', droid.backend.errors)
 
     del droid
     torch.cuda.empty_cache()
@@ -103,13 +111,13 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     min_threshold = 0.4
     max_threshold = 0.7
 
-    print('Predicting Metric Depth ...')
+    vprint('Predicting Metric Depth ...')
     pred_depths = []
     H, W = get_dimention(frame_source)
 
     # Batch processing for Metric3D
     num_frames = len(tstamp)
-    for batch_start in tqdm(range(0, num_frames, metric3d_batch_size), desc="Metric3D batches"):
+    for batch_start in tqdm(range(0, num_frames, metric3d_batch_size), desc="Metric3D batches", disable=QUIET_MODE):
         batch_end = min(batch_start + metric3d_batch_size, num_frames)
         batch_indices = tstamp[batch_start:batch_end]
 
@@ -128,10 +136,10 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
             pred_depths.append(pred_depth)
 
     ##### Estimate Metric Scale #####
-    print('Estimating Metric Scale ...')
+    vprint('Estimating Metric Scale ...')
     scales_ = []
     n = len(tstamp)   # for each keyframe
-    for i in tqdm(range(n)):
+    for i in tqdm(range(n), disable=QUIET_MODE):
         t = tstamp[i]
         disp = disps[i]
         pred_depth = pred_depths[i]
@@ -147,7 +155,7 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
         scales_.append(scale)
 
     median_s = np.median(scales_)
-    print(f"estimated scale: {median_s}")
+    vprint(f"estimated scale: {median_s}")
 
     # Save results
     os.makedirs(f"{seq_folder}/SLAM", exist_ok=True)

@@ -2,8 +2,12 @@ import cv2
 from tqdm import tqdm
 import numpy as np
 import torch
+import os
 
 from ultralytics import YOLO
+
+# Check if we should suppress verbose output
+QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
 
 
 if torch.cuda.is_available():
@@ -50,7 +54,7 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
 
     # Process frames in batches
     num_frames = len(all_frames)
-    for batch_start in tqdm(range(0, num_frames, detect_batch_size), desc="Detect & Track", total=(num_frames + detect_batch_size - 1) // detect_batch_size):
+    for batch_start in tqdm(range(0, num_frames, detect_batch_size), desc="Detect & Track", total=(num_frames + detect_batch_size - 1) // detect_batch_size, disable=QUIET_MODE):
         batch_end = min(batch_start + detect_batch_size, num_frames)
         batch_frames = all_frames[batch_start:batch_end]
         batch_t = frame_indices[batch_start:batch_end]

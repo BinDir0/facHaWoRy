@@ -18,6 +18,14 @@ from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
 from hawor.utils.rotation import angle_axis_to_rotation_matrix, rotation_matrix_to_angle_axis
 from infiller.lib.model.network import TransformerModel
 
+# Check if we should suppress verbose output
+QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
+
+def vprint(*args, **kwargs):
+    """Print only if not in quiet mode."""
+    if not QUIET_MODE:
+        print(*args, **kwargs)
+
 def load_hawor(checkpoint_path):
     from pathlib import Path
     from hawor.configs import get_config
@@ -84,18 +92,18 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 img_focal = float(img_focal)
         except:
             img_focal = 600
-            print(f'No focal length provided, use default {img_focal}')
+            vprint(f'No focal length provided, use default {img_focal}')
             with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as f:
                 f.write(str(img_focal))
     
     tid = np.array([tr for tr in tracks])
 
     if os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'):
-        print("skip hawor motion estimation")
+        vprint("skip hawor motion estimation")
         frame_chunks_all = joblib.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
         return frame_chunks_all, img_focal
 
-    print(f'Running hawor on {os.path.basename(video_path)} ...')
+    vprint(f'Running hawor on {os.path.basename(video_path)} ...')
 
     left_trk = []
     right_trk = []
@@ -162,7 +170,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     frame_chunks_all = defaultdict(list)
     for idx in tid:
-        print(f"tracklet {idx}:")
+        vprint(f"tracklet {idx}:")
         trk = final_tracks[idx]
 
         # interp bboxes
@@ -200,7 +208,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             continue
 
         for frame_ck, boxes_ck in zip(frame_chunks, boxes_chunks):
-            print(f"inference from frame {frame_ck[0]} to {frame_ck[-1]}")
+            vprint(f"inference from frame {frame_ck[0]} to {frame_ck[-1]}")
             frame_indices = np.array(frame_ck, dtype=np.int64)
             if is_right[0] > 0:
                 do_flip = False
@@ -321,7 +329,7 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
             if valid_frame_mask.sum() == 0:
                 continue
             frame_ck = frame_ck[valid_frame_mask]
-            print(f"from frame {frame_ck[0]} to {frame_ck[-1]}")
+            vprint(f"from frame {frame_ck[0]} to {frame_ck[-1]}")
             pred_path = os.path.join(seq_folder, 'cam_space', str(idx), f"{frame_ck[0]}_{frame_ck[-1]}.json")
             with open(pred_path, "r") as f:
                 pred_dict = json.load(f)
@@ -350,12 +358,12 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
         frame = frame_list[missing]
         frame_chunks = parse_chunks_hand_frame(frame)
 
-        print(f"run infiller on {idx2hand[idx]} hand ...")
-        for frame_ck in tqdm(frame_chunks):
+        vprint(f"run infiller on {idx2hand[idx]} hand ...")
+        for frame_ck in tqdm(frame_chunks, disable=QUIET_MODE):
             start_shift = -1
             while frame_ck[0] + start_shift >= 0 and pred_valid[:, frame_ck[0] + start_shift].sum() != 2:
                 start_shift -= 1  # Shift to find the previous valid frame as start
-            print(f"run infiller on frame {frame_ck[0] + start_shift} to frame {min(num_frames-1, frame_ck[0] + start_shift + filling_length)}")
+            vprint(f"run infiller on frame {frame_ck[0] + start_shift} to frame {min(num_frames-1, frame_ck[0] + start_shift + filling_length)}")
 
             frame_start = frame_ck[0]
             filling_net_start = max(0, frame_start + start_shift)
