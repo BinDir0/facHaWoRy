@@ -189,6 +189,7 @@ def build_stage_args(ns):
     args.input_type = ns.input_type
     args.checkpoint = ns.checkpoint
     args.infiller_weight = ns.infiller_weight
+    args.chunk_batch_size = ns.chunk_batch_size
     args.vis_mode = "world"
     args.skip_vis = True
     return args
@@ -258,6 +259,7 @@ def get_parser():
     parser.add_argument("--checkpoint", type=str, default="./weights/hawor/checkpoints/hawor.ckpt")
     parser.add_argument("--infiller_weight", type=str, default="./weights/hawor/checkpoints/infiller.pt")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--chunk_batch_size", type=int, default=4)
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")

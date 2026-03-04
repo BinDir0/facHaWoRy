@@ -376,9 +376,12 @@ class HAWOR(pl.LightningModule):
 
         return output
 
-    def inference(self, imgfiles, boxes, img_focal, img_center, device='cuda', do_flip=False):
-        db = TrackDatasetEval(imgfiles, boxes, img_focal=img_focal, 
+    def inference(self, imgfiles, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=4):
+        db = TrackDatasetEval(imgfiles, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
+
+        seq_len = self.seq_len
+        total_frames = len(db)
 
         # Results
         pred_cam = []
@@ -387,55 +390,75 @@ class HAWOR(pl.LightningModule):
         pred_rotmat = []
         pred_trans = []
 
-        # To-do: efficient implementation with batch
-        items = []
-        for i in tqdm(range(len(db))):
-            item = db[i]
-            items.append(item)
+        if total_frames == 0:
+            empty = torch.empty(0)
+            return {
+                'pred_cam': empty,
+                'pred_pose': empty,
+                'pred_shape': empty,
+                'pred_rotmat': empty,
+                'pred_trans': empty,
+                'img_focal': img_focal,
+                'img_center': img_center,
+            }
 
-            # padding to 16
-            if i == len(db) - 1 and len(db) % 16 != 0:
-                pad = 16 - len(db) % 16
-                for _ in range(pad):
-                    items.append(item)
+        # Materialize items once, then pad to multiples of seq_len
+        items = [db[i] for i in range(total_frames)]
+        remainder = total_frames % seq_len
+        if remainder != 0:
+            pad = seq_len - remainder
+            items.extend([items[-1]] * pad)
 
-            if len(items) < 16:
-                continue
-            elif len(items) == 16:
-                batch = default_collate(items)
-                items = []
-            else:
-                raise NotImplementedError
+        n_chunks = len(items) // seq_len
+
+        for chunk_start in tqdm(range(0, n_chunks, chunk_batch_size)):
+            chunk_end = min(chunk_start + chunk_batch_size, n_chunks)
+            current_chunks = chunk_end - chunk_start
+
+            # Build (B, T, ...) batch
+            chunk_batches = []
+            for ck in range(chunk_start, chunk_end):
+                start = ck * seq_len
+                end = (ck + 1) * seq_len
+                chunk_batches.append(default_collate(items[start:end]))
+
+            batch = {}
+            for k in chunk_batches[0].keys():
+                v0 = chunk_batches[0][k]
+                if type(v0) == torch.Tensor:
+                    batch[k] = torch.stack([cb[k] for cb in chunk_batches], dim=0).to(device)
 
             with torch.no_grad():
-                batch = {k: v.to(device).unsqueeze(0) for k, v in batch.items() if type(v)==torch.Tensor}
-                # for image_i in range(16):
-                #     hawor_input_cv2 = vis_tensor_cv2(batch['img'][:, image_i])
-                #     cv2.imwrite(f'debug_vis_model.png', hawor_input_cv2)
-                #     print("vis")
                 output = self.forward(batch)
                 out = output['out']
 
-            if i == len(db) - 1 and len(db) % 16 != 0:
-                out = {k:v[:len(db) % 16] for k,v in out.items()}
-            else:
-                out = {k:v for k,v in out.items()}
-                
+            # out tensors are flattened as (B*T, ...)
+            expected = current_chunks * seq_len
+            out = {k: v[:expected] for k, v in out.items()}
+
             pred_cam.append(out['pred_cam'].cpu())
             pred_pose.append(out['pred_pose'].cpu())
             pred_shape.append(out['pred_shape'].cpu())
             pred_rotmat.append(out['pred_rotmat'].cpu())
             pred_trans.append(out['trans_full'].cpu())
 
+        # Trim padded frames
+        pred_cam = torch.cat(pred_cam)[:total_frames]
+        pred_pose = torch.cat(pred_pose)[:total_frames]
+        pred_shape = torch.cat(pred_shape)[:total_frames]
+        pred_rotmat = torch.cat(pred_rotmat)[:total_frames]
+        pred_trans = torch.cat(pred_trans)[:total_frames]
 
-        results = {'pred_cam': torch.cat(pred_cam),
-                'pred_pose': torch.cat(pred_pose),
-                'pred_shape': torch.cat(pred_shape),
-                'pred_rotmat': torch.cat(pred_rotmat),
-                'pred_trans': torch.cat(pred_trans),
-                'img_focal': img_focal,
-                'img_center': img_center}
-        
+        results = {
+            'pred_cam': pred_cam,
+            'pred_pose': pred_pose,
+            'pred_shape': pred_shape,
+            'pred_rotmat': pred_rotmat,
+            'pred_trans': pred_trans,
+            'img_focal': img_focal,
+            'img_center': img_center,
+        }
+
         return results
 
     def validation_step(self, batch: Dict, batch_idx: int, dataloader_idx=0) -> Dict:

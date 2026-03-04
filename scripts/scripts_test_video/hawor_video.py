@@ -182,7 +182,14 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             else:
                 do_flip = True
                 
-            results = model.inference(img_ck, boxes_ck, img_focal=img_focal, img_center=img_center, do_flip=do_flip)
+            results = model.inference(
+                img_ck,
+                boxes_ck,
+                img_focal=img_focal,
+                img_center=img_center,
+                do_flip=do_flip,
+                chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
+            )
 
             data_out = {
                 "init_root_orient": results["pred_rotmat"][None, :, 0], # (B, T, 3, 3)
