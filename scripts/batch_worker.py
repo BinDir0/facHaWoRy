@@ -184,6 +184,7 @@ class WorkerRuntime:
         input_type: str = "file",
         chunk_batch_size: int = 4,
         metric3d_batch_size: int = 8,
+        detect_batch_size: int = 8,
         frame_backend: str = "decord",
     ):
         self.gpu = gpu
@@ -193,6 +194,7 @@ class WorkerRuntime:
         self.input_type = input_type
         self.chunk_batch_size = chunk_batch_size
         self.metric3d_batch_size = metric3d_batch_size
+        self.detect_batch_size = detect_batch_size
         self.frame_backend = frame_backend
 
         self.detector_runner = None
@@ -215,6 +217,7 @@ class WorkerRuntime:
         args.infiller_weight = self.infiller_weight
         args.chunk_batch_size = self.chunk_batch_size
         args.metric3d_batch_size = self.metric3d_batch_size
+        args.detect_batch_size = self.detect_batch_size
         args.frame_backend = self.frame_backend
         args.vis_mode = "world"
         args.skip_vis = True
@@ -281,6 +284,7 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns):
             stage_args,
             detector_runner=runtime.detector_runner,
             force=ns.force,
+            detect_batch_size=ns.detect_batch_size,
         )
     else:
         start_idx, end_idx = get_track_range(seq_folder)
@@ -399,7 +403,7 @@ def run_stage(ns):
     from scripts.scripts_test_video.hawor_video import hawor_infiller, hawor_motion_estimation
 
     if ns.stage == "detect_track":
-        start_idx, end_idx, _, _ = detect_track_video(stage_args)
+        start_idx, end_idx, _, _ = detect_track_video(stage_args, detect_batch_size=ns.detect_batch_size)
     else:
         start_idx, end_idx = get_track_range(seq_folder)
 
@@ -436,6 +440,7 @@ def get_parser():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--chunk_batch_size", type=int, default=4)
     parser.add_argument("--metric3d_batch_size", type=int, default=8, help="Batch size for Metric3D depth estimation")
+    parser.add_argument("--detect_batch_size", type=int, default=8, help="Batch size for YOLO detection and tracking")
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")

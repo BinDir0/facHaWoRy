@@ -69,6 +69,7 @@ class BatchScheduler:
         img_focal: Optional[float],
         chunk_batch_size: int,
         metric3d_batch_size: int,
+        detect_batch_size: int,
         frame_backend: str,
         scheduler_mode: str,
         persistent_worker: bool,
@@ -85,6 +86,7 @@ class BatchScheduler:
         self.img_focal = img_focal
         self.chunk_batch_size = chunk_batch_size
         self.metric3d_batch_size = metric3d_batch_size
+        self.detect_batch_size = detect_batch_size
         self.frame_backend = frame_backend
         self.scheduler_mode = scheduler_mode
         self.persistent_worker = persistent_worker
@@ -152,6 +154,7 @@ class BatchScheduler:
             cmd.extend(["--img_focal", str(self.img_focal)])
         cmd.extend(["--chunk_batch_size", str(self.chunk_batch_size)])
         cmd.extend(["--metric3d_batch_size", str(self.metric3d_batch_size)])
+        cmd.extend(["--detect_batch_size", str(self.detect_batch_size)])
         cmd.extend(["--frame_backend", self.frame_backend])
         if self.resume:
             cmd.append("--resume")
@@ -349,6 +352,7 @@ class BatchScheduler:
             input_type="file",
             chunk_batch_size=self.chunk_batch_size,
             metric3d_batch_size=self.metric3d_batch_size,
+            detect_batch_size=self.detect_batch_size,
             frame_backend=self.frame_backend,
         )
 
@@ -766,6 +770,12 @@ def get_parser():
         help="Batch size for Metric3D depth estimation in SLAM stage",
     )
     parser.add_argument(
+        "--detect_batch_size",
+        type=int,
+        default=8,
+        help="Batch size for YOLO detection and tracking in detect_track stage",
+    )
+    parser.add_argument(
         "--frame_backend",
         type=str,
         default="decord",
@@ -859,6 +869,7 @@ def main():
     print(f"Persistent worker: {args.persistent_worker}")
     print(f"Max retries: {args.retries}")
     print(f"Max stage retries (wave): {args.max_stage_retries}")
+    print(f"Detect batch size (detect_track): {args.detect_batch_size}")
     print(f"Chunk batch size (motion): {args.chunk_batch_size}")
     print(f"Metric3D batch size (slam): {args.metric3d_batch_size}")
     print(f"Frame backend: {args.frame_backend}")
@@ -878,6 +889,7 @@ def main():
         img_focal=args.img_focal,
         chunk_batch_size=args.chunk_batch_size,
         metric3d_batch_size=args.metric3d_batch_size,
+        detect_batch_size=args.detect_batch_size,
         frame_backend=args.frame_backend,
         scheduler_mode=args.scheduler_mode,
         persistent_worker=args.persistent_worker,

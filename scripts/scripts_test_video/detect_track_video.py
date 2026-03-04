@@ -9,7 +9,7 @@ from lib.pipeline.frame_source import build_frame_source
 from lib.pipeline.tools import detect_track
 
 
-def detect_track_video(args, detector_runner=None, force=False):
+def detect_track_video(args, detector_runner=None, force=False, detect_batch_size=1):
     file = args.video_path
     root = os.path.dirname(file)
     seq = os.path.basename(file).split('.')[0]
@@ -42,6 +42,7 @@ def detect_track_video(args, detector_runner=None, force=False):
         min_edge_conf=0.4,
         hand_det_model=detector_runner,
         reset_tracker=True,
+        detect_batch_size=detect_batch_size,
     )
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy', boxes_)
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', tracks_)
