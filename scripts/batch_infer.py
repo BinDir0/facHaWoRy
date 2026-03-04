@@ -393,6 +393,9 @@ class BatchScheduler:
         task_ns.resume = self.resume
         task_ns.force = False
         task_ns.seed = 42
+        task_ns.detect_batch_size = self.detect_batch_size
+        task_ns.chunk_batch_size = self.chunk_batch_size
+        task_ns.metric3d_batch_size = self.metric3d_batch_size
 
         try:
             result = run_stage_with_runtime(runtime, task_ns)
