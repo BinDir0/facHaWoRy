@@ -193,11 +193,20 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
     total_frames = sum(len(fs) for _, fs in video_sources)
     pbar = tqdm(total=total_frames, disable=QUIET_MODE, desc="Detect & Track (Multi-Video)")
 
+    # Performance timing
+    import time
+    io_time = 0.0
+    gpu_time = 0.0
+    tracker_time = 0.0
+    batch_count = 0
+
     while active_videos:
         # Collect current frame from each active video
         batch_frames = []
         batch_meta = []  # (video_idx, frame_t, img_shape)
 
+        # TIME: I/O - Frame reading
+        t0 = time.time()
         for vid_idx in active_videos[:]:
             try:
                 t, img_cv2 = next(video_states[vid_idx]['frame_iter'])
@@ -207,10 +216,14 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
                 video_states[vid_idx]['active'] = False
                 active_videos.remove(vid_idx)
 
+        io_time += time.time() - t0
+
         if not batch_frames:
             break
 
         # Batch inference (detection only, no tracking)
+        # TIME: GPU inference
+        t0 = time.time()
         with torch.no_grad():
             with autocast():
                 results_batch = hand_det_model.predict(
@@ -218,8 +231,11 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
                     conf=thresh,
                     verbose=False
                 )
+        gpu_time += time.time() - t0
 
         # Process results for each video independently
+        # TIME: Tracker update
+        t0 = time.time()
         for (vid_idx, t, img_shape), results in zip(batch_meta, results_batch):
             img_h, img_w = img_shape
             state = video_states[vid_idx]
@@ -307,7 +323,30 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
             state['frame_count'] += 1
             pbar.update(1)
 
+        tracker_time += time.time() - t0
+        batch_count += 1
+
     pbar.close()
+
+    # Print performance statistics
+    total_time = io_time + gpu_time + tracker_time
+    print("\n" + "="*60)
+    print("Performance Breakdown (detect_track_multivideo):")
+    print("="*60)
+    print(f"Total batches processed: {batch_count}")
+    print(f"Videos per batch: {len(video_sources)}")
+    print(f"Total frames: {total_frames}")
+    print(f"\nTime breakdown:")
+    print(f"  I/O (frame reading):  {io_time:7.2f}s ({io_time/total_time*100:5.1f}%)")
+    print(f"  GPU (inference):      {gpu_time:7.2f}s ({gpu_time/total_time*100:5.1f}%)")
+    print(f"  Tracker (update):     {tracker_time:7.2f}s ({tracker_time/total_time*100:5.1f}%)")
+    print(f"  Total:                {total_time:7.2f}s")
+    print(f"\nPer-batch averages:")
+    print(f"  I/O per batch:        {io_time/batch_count*1000:6.1f}ms")
+    print(f"  GPU per batch:        {gpu_time/batch_count*1000:6.1f}ms")
+    print(f"  Tracker per batch:    {tracker_time/batch_count*1000:6.1f}ms")
+    print(f"\nGPU utilization: {gpu_time/total_time*100:.1f}%")
+    print("="*60 + "\n")
 
     # Convert results to numpy arrays (same format as original detect_track)
     results = {}
