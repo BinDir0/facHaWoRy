@@ -458,7 +458,7 @@ class BatchScheduler:
                 results = detect_track_multivideo(
                     video_sources,
                     thresh=0.35,
-                    hand_det_model=runtime.hand_det_model
+                    hand_det_model=runtime.detector_runner
                 )
 
                 # Save results for each video
