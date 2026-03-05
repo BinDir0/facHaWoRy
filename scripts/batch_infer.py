@@ -444,7 +444,7 @@ class BatchScheduler:
             video_sources = []
             for idx, vp in enumerate(videos_to_process):
                 try:
-                    fs = build_frame_source(vp, backend=self.frame_backend)
+                    fs, _ = build_frame_source(vp, backend=self.frame_backend)
                     video_sources.append((idx, fs))
                 except Exception as e:
                     print(f"Error building frame source for {vp}: {e}")
