@@ -76,6 +76,11 @@ def build_infiller_runner(weight_path, device=None):
 
 
 def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None):
+    import time
+    timing = {}
+    t_start_total = time.time()
+
+    t0 = time.time()
     motion_runner = motion_runner or build_motion_runner(args.checkpoint)
     model = motion_runner['model']
 
@@ -85,6 +90,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
     img_focal = args.img_focal
+    timing['1_load_data'] = time.time() - t0
     if img_focal is None:
         try:
             with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as f:
@@ -108,6 +114,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     vprint(f'Running hawor on {os.path.basename(video_path)} ...')
 
+    t0 = time.time()
     left_trk = []
     right_trk = []
     for k, idx in enumerate(tid):
@@ -170,8 +177,13 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             [78, 108, 79]])
     faces_right = np.concatenate([faces, faces_new], axis=0)
     faces_left = faces_right[:,[0,2,1]]
+    timing['2_setup'] = time.time() - t0
 
+    t0 = time.time()
     frame_chunks_all = defaultdict(list)
+    timing_inference = 0
+    timing_postprocess = 0
+    timing_render = 0
     for idx in tid:
         vprint(f"tracklet {idx}:")
         trk = final_tracks[idx]
@@ -236,6 +248,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
         all_frame_indices = np.array(all_frame_indices, dtype=np.int64)
         all_boxes = np.concatenate(all_boxes_list, axis=0) if len(all_boxes_list) > 1 else all_boxes_list[0]
 
+        t_inf = time.time()
         results = model.inference(
             frame_source,
             all_frame_indices,
@@ -245,8 +258,10 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             do_flip=do_flip,
             chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
         )
+        timing_inference += time.time() - t_inf
 
         # Process results for each original chunk
+        t_post = time.time()
         for chunk_idx, (frame_ck, boxes_ck) in enumerate(zip(frame_chunks, boxes_chunks)):
             start_idx = chunk_boundaries[chunk_idx]
             end_idx = chunk_boundaries[chunk_idx + 1]
@@ -288,6 +303,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
 
             # get hand mask
+            t_rend = time.time()
             data_out["init_root_orient"] = rotation_matrix_to_angle_axis(data_out["init_root_orient"])
             data_out["init_hand_pose"] = rotation_matrix_to_angle_axis(data_out["init_hand_pose"])
             if do_flip: # left
@@ -310,10 +326,34 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 rend, mask = renderer.render_multiple(vertices_i.unsqueeze(0).cuda(), faces, verts_color.unsqueeze(0).cuda(), cameras, lights)
 
                 model_masks[frame_ck[img_i]] += mask
-                
+            timing_render += time.time() - t_rend
+        timing_postprocess += time.time() - t_post
+
+    timing['3_track_processing'] = time.time() - t0
+    timing['3a_inference'] = timing_inference
+    timing['3b_postprocess'] = timing_postprocess
+    timing['3c_render'] = timing_render
+
+    t0 = time.time()
     model_masks = model_masks > 0 # bool
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', model_masks)
     joblib.dump(frame_chunks_all, f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
+    timing['4_save_results'] = time.time() - t0
+
+    timing['total'] = time.time() - t_start_total
+
+    # Print timing summary
+    print(f"\n{'='*60}")
+    print(f"Motion Stage Timing for {os.path.basename(video_path)}")
+    print(f"{'='*60}")
+    for key in sorted(timing.keys()):
+        if key == 'total':
+            continue
+        pct = (timing[key] / timing['total']) * 100
+        print(f"  {key:25s}: {timing[key]:6.2f}s ({pct:5.1f}%)")
+    print(f"  {'total':25s}: {timing['total']:6.2f}s")
+    print(f"{'='*60}\n")
+
     return frame_chunks_all, img_focal
 
 def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
