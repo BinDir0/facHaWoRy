@@ -235,14 +235,6 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
         if not batch_frames:
             break
 
-        # Debug: Print batch info (阶段2B调试)
-        if batch_count == 0:  # Only print first batch
-            print(f"\n[DEBUG] Batch info:")
-            print(f"  Actual batch size: {len(batch_frames)}")
-            print(f"  Frame shapes: {[f.shape for f in batch_frames[:3]]}...")  # Show first 3
-            if torch.cuda.is_available():
-                print(f"  GPU memory before inference: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
-
         # Batch inference (detection only, no tracking)
         # TIME: GPU inference
         t0 = time.time()
@@ -254,10 +246,6 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
                     verbose=False
                 )
         gpu_time += time.time() - t0
-
-        # Debug: Print GPU memory after inference
-        if batch_count == 0 and torch.cuda.is_available():
-            print(f"  GPU memory after inference: {torch.cuda.memory_allocated()/1024**2:.1f}MB\n")
 
         # Process results for each video independently
         # TIME: Tracker update
