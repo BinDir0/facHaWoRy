@@ -107,6 +107,12 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     # Check if both output files exist before skipping
     frame_chunks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'
     model_masks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy'
+
+    # Auto-fix incomplete outputs: if frame_chunks exists but model_masks doesn't, remove frame_chunks
+    if os.path.exists(frame_chunks_file) and not os.path.exists(model_masks_file):
+        vprint(f"Warning: Incomplete output detected. Removing {frame_chunks_file} to force re-run")
+        os.remove(frame_chunks_file)
+
     if os.path.exists(frame_chunks_file) and os.path.exists(model_masks_file):
         vprint("skip hawor motion estimation")
         frame_chunks_all = joblib.load(frame_chunks_file)
