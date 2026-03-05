@@ -8,6 +8,7 @@ per video with retry logic, resume/skip support, and structured logging.
 import argparse
 import json
 import multiprocessing as mp
+import numpy as np
 import os
 import subprocess
 import sys
