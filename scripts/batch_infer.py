@@ -472,7 +472,7 @@ class BatchScheduler:
                         seq_folder = get_seq_folder(vp)
 
                         # Get frame range
-                        fs = build_frame_source(vp, backend=self.frame_backend)
+                        fs, _ = build_frame_source(vp, backend=self.frame_backend)
                         start_idx = 0
                         end_idx = len(fs)
 
