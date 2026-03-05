@@ -207,29 +207,59 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
         if len(frame_chunks) == 0:
             continue
 
-        for frame_ck, boxes_ck in zip(frame_chunks, boxes_chunks):
-            vprint(f"inference from frame {frame_ck[0]} to {frame_ck[-1]}")
-            frame_indices = np.array(frame_ck, dtype=np.int64)
-            if is_right[0] > 0:
-                do_flip = False
-            else:
-                do_flip = True
+        # Optimization: Merge all chunks for this hand into a single inference call
+        # This reduces overhead and improves GPU utilization
+        if is_right[0] > 0:
+            do_flip = False
+        else:
+            do_flip = True
 
-            results = model.inference(
-                frame_source,
-                frame_indices,
-                boxes_ck,
-                img_focal=img_focal,
-                img_center=img_center,
-                do_flip=do_flip,
-                chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
-            )
+        # Collect all frame indices and boxes from all chunks
+        all_frame_indices = []
+        all_boxes_list = []
+        chunk_boundaries = [0]  # Track where each chunk starts for later splitting
+
+        for frame_ck, boxes_ck in zip(frame_chunks, boxes_chunks):
+            all_frame_indices.extend(frame_ck)
+            all_boxes_list.append(boxes_ck)
+            chunk_boundaries.append(len(all_frame_indices))
+
+        if len(all_frame_indices) == 0:
+            continue
+
+        vprint(f"inference from frame {all_frame_indices[0]} to {all_frame_indices[-1]} ({len(frame_chunks)} chunks merged)")
+
+        # Single inference call for all chunks
+        all_frame_indices = np.array(all_frame_indices, dtype=np.int64)
+        all_boxes = np.concatenate(all_boxes_list, axis=0) if len(all_boxes_list) > 1 else all_boxes_list[0]
+
+        results = model.inference(
+            frame_source,
+            all_frame_indices,
+            all_boxes,
+            img_focal=img_focal,
+            img_center=img_center,
+            do_flip=do_flip,
+            chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
+        )
+
+        # Process results for each original chunk
+        for chunk_idx, (frame_ck, boxes_ck) in enumerate(zip(frame_chunks, boxes_chunks)):
+            start_idx = chunk_boundaries[chunk_idx]
+            end_idx = chunk_boundaries[chunk_idx + 1]
+
+            # Extract results for this chunk
+            chunk_results = {
+                "pred_rotmat": results["pred_rotmat"][start_idx:end_idx],
+                "pred_trans": results["pred_trans"][start_idx:end_idx],
+                "pred_shape": results["pred_shape"][start_idx:end_idx],
+            }
 
             data_out = {
-                "init_root_orient": results["pred_rotmat"][None, :, 0], # (B, T, 3, 3)
-                "init_hand_pose": results["pred_rotmat"][None, :, 1:], # (B, T, 15, 3, 3)
-                "init_trans": results["pred_trans"][None, :, 0],  # (B, T, 3)
-                "init_betas": results["pred_shape"][None, :]  # (B, T, 10)
+                "init_root_orient": chunk_results["pred_rotmat"][None, :, 0], # (B, T, 3, 3)
+                "init_hand_pose": chunk_results["pred_rotmat"][None, :, 1:], # (B, T, 15, 3, 3)
+                "init_trans": chunk_results["pred_trans"][None, :, 0],  # (B, T, 3)
+                "init_betas": chunk_results["pred_shape"][None, :]  # (B, T, 10)
             }
 
             # flip left hand
@@ -261,8 +291,9 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
             else: # right
                 outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
-            
+
             vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
+            frame_indices = np.array(frame_ck, dtype=np.int64)
             for img_i in range(len(frame_indices)):
                 if do_flip:
                     faces = torch.from_numpy(faces_left).cuda()
@@ -274,7 +305,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 verts_color = torch.tensor([0, 0, 255, 255]) / 255
                 vertices_i = vertices[[img_i]]
                 rend, mask = renderer.render_multiple(vertices_i.unsqueeze(0).cuda(), faces, verts_color.unsqueeze(0).cuda(), cameras, lights)
-                
+
                 model_masks[frame_ck[img_i]] += mask
                 
     model_masks = model_masks > 0 # bool

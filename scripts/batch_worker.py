@@ -481,7 +481,7 @@ def get_parser():
     parser.add_argument("--checkpoint", type=str, default="./weights/hawor/checkpoints/hawor.ckpt")
     parser.add_argument("--infiller_weight", type=str, default="./weights/hawor/checkpoints/infiller.pt")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--chunk_batch_size", type=int, default=4)
+    parser.add_argument("--chunk_batch_size", type=int, default=8)
     parser.add_argument("--metric3d_batch_size", type=int, default=8, help="Batch size for Metric3D depth estimation")
     # CRITICAL: detect_batch_size MUST be 1 for tracking to work correctly.
     # Tracking is stateful and sequential - each frame depends on previous frame's

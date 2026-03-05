@@ -880,7 +880,7 @@ def get_parser():
     parser.add_argument(
         "--chunk_batch_size",
         type=int,
-        default=4,
+        default=8,
         help="Number of 16-frame chunks processed per forward in HAWOR motion stage",
     )
     parser.add_argument(
