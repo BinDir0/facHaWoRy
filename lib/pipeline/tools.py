@@ -195,6 +195,7 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
 
     # Performance timing
     import time
+    from concurrent.futures import ThreadPoolExecutor
     io_time = 0.0
     gpu_time = 0.0
     tracker_time = 0.0
@@ -205,21 +206,42 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
         batch_frames = []
         batch_meta = []  # (video_idx, frame_t, img_shape)
 
-        # TIME: I/O - Frame reading
+        # TIME: I/O - Frame reading (parallel)
         t0 = time.time()
-        for vid_idx in active_videos[:]:
+
+        # Parallel frame reading using ThreadPoolExecutor
+        def read_frame(vid_idx):
             try:
                 t, img_cv2 = next(video_states[vid_idx]['frame_iter'])
-                batch_frames.append(img_cv2)
-                batch_meta.append((vid_idx, t, img_cv2.shape[:2]))
+                return (vid_idx, t, img_cv2, img_cv2.shape[:2], None)
             except StopIteration:
+                return (vid_idx, None, None, None, 'stop')
+
+        with ThreadPoolExecutor(max_workers=len(active_videos)) as executor:
+            futures = [executor.submit(read_frame, vid_idx) for vid_idx in active_videos[:]]
+            results = [f.result() for f in futures]
+
+        # Process results
+        for vid_idx, t, img_cv2, img_shape, error in results:
+            if error == 'stop':
                 video_states[vid_idx]['active'] = False
                 active_videos.remove(vid_idx)
+            else:
+                batch_frames.append(img_cv2)
+                batch_meta.append((vid_idx, t, img_shape))
 
         io_time += time.time() - t0
 
         if not batch_frames:
             break
+
+        # Debug: Print batch info (阶段2B调试)
+        if batch_count == 0:  # Only print first batch
+            print(f"\n[DEBUG] Batch info:")
+            print(f"  Actual batch size: {len(batch_frames)}")
+            print(f"  Frame shapes: {[f.shape for f in batch_frames[:3]]}...")  # Show first 3
+            if torch.cuda.is_available():
+                print(f"  GPU memory before inference: {torch.cuda.memory_allocated()/1024**2:.1f}MB")
 
         # Batch inference (detection only, no tracking)
         # TIME: GPU inference
@@ -232,6 +254,10 @@ def detect_track_multivideo(video_sources, thresh=0.5, edge_margin_ratio=0.1, mi
                     verbose=False
                 )
         gpu_time += time.time() - t0
+
+        # Debug: Print GPU memory after inference
+        if batch_count == 0 and torch.cuda.is_available():
+            print(f"  GPU memory after inference: {torch.cuda.memory_allocated()/1024**2:.1f}MB\n")
 
         # Process results for each video independently
         # TIME: Tracker update

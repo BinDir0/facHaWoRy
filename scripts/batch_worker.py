@@ -310,7 +310,7 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns):
     stage_args = runtime.build_stage_args(ns.video_path)
     seq_folder = get_seq_folder(ns.video_path)
 
-    if ns.resume and not ns.force and is_stage_complete(ns.stage, seq_folder):
+    if ns.resume and not ns.force and is_stage_complete(ns.stage, seq_folder, fast_check=True):
         return {
             "status": "skipped",
             "reason": "existing_valid_output",
@@ -435,7 +435,7 @@ def run_stage(ns):
     stage_args = build_stage_args(ns)
     seq_folder = get_seq_folder(ns.video_path)
 
-    if ns.resume and not ns.force and is_stage_complete(ns.stage, seq_folder):
+    if ns.resume and not ns.force and is_stage_complete(ns.stage, seq_folder, fast_check=True):
         return {
             "status": "skipped",
             "reason": "existing_valid_output",
