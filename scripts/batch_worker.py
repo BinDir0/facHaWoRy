@@ -451,7 +451,15 @@ def get_parser():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--chunk_batch_size", type=int, default=4)
     parser.add_argument("--metric3d_batch_size", type=int, default=8, help="Batch size for Metric3D depth estimation")
-    parser.add_argument("--detect_batch_size", type=int, default=8, help="Batch size for YOLO detection and tracking")
+    # CRITICAL: detect_batch_size MUST be 1 for tracking to work correctly.
+    # Tracking is stateful and sequential - each frame depends on previous frame's
+    # Kalman filter state. Batching multiple frames breaks this dependency and
+    # causes "LinAlgError: leading minor not positive definite" in tracker.
+    #
+    # For performance optimization, use cross-video batching (detect_video_batch_size)
+    # instead, which processes multiple videos in parallel while maintaining
+    # per-video tracker state.
+    parser.add_argument("--detect_batch_size", type=int, default=1, help="MUST be 1 - frame-level batching breaks tracker state")
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")
@@ -463,6 +471,14 @@ def get_parser():
 
 if __name__ == "__main__":
     args = get_parser().parse_args()
+
+    # Validate detect_batch_size
+    if args.detect_batch_size > 1:
+        raise ValueError(
+            f"detect_batch_size must be 1 (got {args.detect_batch_size}). "
+            "Frame-level batching breaks YOLO tracker state and causes Kalman filter errors. "
+            "Use --detect_video_batch_size to process multiple videos in parallel instead."
+        )
 
     if args.persistent_worker:
         if not args.video_list:

@@ -33,8 +33,24 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
         min_edge_conf: Minimum confidence required for detections near edges
         hand_det_model: Optional preloaded YOLO detector for reuse across videos
         reset_tracker: Reset tracker state before running current video
-        detect_batch_size: Batch size for detection (default 1 for backward compatibility)
+        detect_batch_size: MUST be 1 - kept for API compatibility but frame-level batching is not supported
+
+    CRITICAL NOTE:
+        Tracking is inherently sequential and stateful. Each frame's tracking depends on
+        the previous frame's Kalman filter state. Batching multiple frames from the same
+        video breaks this state dependency and causes "LinAlgError: leading minor not
+        positive definite" errors in the tracker.
+
+        For performance optimization, use cross-video batching at the scheduler level
+        (multiple GPUs processing different videos in parallel) instead of frame-level batching.
     """
+    # Validate detect_batch_size
+    if detect_batch_size != 1:
+        raise ValueError(
+            f"detect_batch_size must be 1 (got {detect_batch_size}). "
+            "Frame-level batching breaks YOLO tracker state."
+        )
+
     hand_det_model = hand_det_model or YOLO('./weights/external/detector.pt')
 
     if reset_tracker and hasattr(hand_det_model, 'predictor') and hand_det_model.predictor is not None:
@@ -45,98 +61,83 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
     fallback_counter = 0  # Global counter for unique fallback IDs
     track_last_seen = {}  # Track when each track was last seen with good quality
 
-    # Collect all frames first for batch processing
-    all_frames = []
-    frame_indices = []
-    for t, img_cv2 in frame_source.iter_frames(rgb=False):
-        all_frames.append(img_cv2)
-        frame_indices.append(t)
+    # Process frames sequentially to maintain tracker state
+    for t, img_cv2 in tqdm(frame_source.iter_frames(rgb=False), total=len(frame_source), disable=QUIET_MODE, desc="Detect & Track"):
+        img_h, img_w = img_cv2.shape[:2]
 
-    # Process frames in batches
-    num_frames = len(all_frames)
-    for batch_start in tqdm(range(0, num_frames, detect_batch_size), desc="Detect & Track", total=(num_frames + detect_batch_size - 1) // detect_batch_size, disable=QUIET_MODE):
-        batch_end = min(batch_start + detect_batch_size, num_frames)
-        batch_frames = all_frames[batch_start:batch_end]
-        batch_t = frame_indices[batch_start:batch_end]
+        # Define edge regions
+        edge_left = img_w * edge_margin_ratio
+        edge_right = img_w * (1 - edge_margin_ratio)
+        edge_top = img_h * edge_margin_ratio
+        edge_bottom = img_h * (1 - edge_margin_ratio)
 
-        # Batch detection and tracking
+        ### --- Detection ---
         with torch.no_grad():
             with autocast():
-                results_batch = hand_det_model.track(batch_frames, conf=thresh, persist=True, verbose=False)
+                results = hand_det_model.track(img_cv2, conf=thresh, persist=True, verbose=False)
 
-        # Process each frame's results
-        for frame_idx, (t, img_cv2, results) in enumerate(zip(batch_t, batch_frames, results_batch)):
-            img_h, img_w = img_cv2.shape[:2]
-
-            # Define edge regions
-            edge_left = img_w * edge_margin_ratio
-            edge_right = img_w * (1 - edge_margin_ratio)
-            edge_top = img_h * edge_margin_ratio
-            edge_bottom = img_h * (1 - edge_margin_ratio)
-
-            ### --- Detection ---
-            boxes = results.boxes.xyxy.cpu().numpy()
-            confs = results.boxes.conf.cpu().numpy()
-            handedness = results.boxes.cls.cpu().numpy()
-            if not results.boxes.id is None:
-                track_id = results.boxes.id.cpu().numpy()
-            else:
-                track_id = [-1] * len(boxes)
-
-            boxes = np.hstack([boxes, confs[:, None]])
-            boxes_.append(boxes)
-            find_right = False
-            find_left = False
-            for idx, box in enumerate(boxes):
-                # Check if detection is near edge
-                x1, y1, x2, y2, conf = boxes[idx]
-                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-                is_near_edge = (cx < edge_left or cx > edge_right or
-                               cy < edge_top or cy > edge_bottom)
-
-                # Apply stricter confidence threshold for edge detections
-                if is_near_edge and conf < min_edge_conf:
-                    continue  # Skip low-confidence edge detections
-
-                if track_id[idx] == -1:
-                    # Generate unique fallback ID using global counter
-                    # This prevents multiple untracked detections from getting the same ID
-                    if handedness[[idx]] > 0:
-                        id = int(10000 + fallback_counter)  # Right hand fallbacks: 10000+
-                    else:
-                        id = int(5000 + fallback_counter)   # Left hand fallbacks: 5000+
-                    fallback_counter += 1
+                boxes = results[0].boxes.xyxy.cpu().numpy()
+                confs = results[0].boxes.conf.cpu().numpy()
+                handedness = results[0].boxes.cls.cpu().numpy()
+                if not results[0].boxes.id is None:
+                    track_id = results[0].boxes.id.cpu().numpy()
                 else:
-                    id = track_id[idx]
+                    track_id = [-1] * len(boxes)
 
-                # Check track quality: if track hasn't been seen for a while, be more strict
-                if id in track_last_seen:
-                    frames_since_last = t - track_last_seen[id]
-                    if frames_since_last > 10:  # Track was lost for >10 frames
-                        # Require higher confidence to resume track
-                        if conf < min_edge_conf:
-                            continue
+                boxes = np.hstack([boxes, confs[:, None]])
+                boxes_.append(boxes)
+                find_right = False
+                find_left = False
+                for idx, box in enumerate(boxes):
+                    # Check if detection is near edge
+                    x1, y1, x2, y2, conf = boxes[idx]
+                    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                    is_near_edge = (cx < edge_left or cx > edge_right or
+                                   cy < edge_top or cy > edge_bottom)
 
-                subj = dict()
-                subj['frame'] = t
-                subj['det'] = True
-                subj['det_box'] = boxes[[idx]]
-                subj['det_handedness'] = handedness[[idx]]
-                subj['is_near_edge'] = is_near_edge
+                    # Apply stricter confidence threshold for edge detections
+                    if is_near_edge and conf < min_edge_conf:
+                        continue  # Skip low-confidence edge detections
 
-
-                if (not find_right and handedness[[idx]] > 0) or (not find_left and handedness[[idx]]==0):
-                    if id in tracks:
-                        tracks[id].append(subj)
+                    if track_id[idx] == -1:
+                        # Generate unique fallback ID using global counter
+                        # This prevents multiple untracked detections from getting the same ID
+                        if handedness[[idx]] > 0:
+                            id = int(10000 + fallback_counter)  # Right hand fallbacks: 10000+
+                        else:
+                            id = int(5000 + fallback_counter)   # Left hand fallbacks: 5000+
+                        fallback_counter += 1
                     else:
-                        tracks[id] = [subj]
+                        id = track_id[idx]
 
-                    track_last_seen[id] = t  # Update last seen time
+                    # Check track quality: if track hasn't been seen for a while, be more strict
+                    if id in track_last_seen:
+                        frames_since_last = t - track_last_seen[id]
+                        if frames_since_last > 10:  # Track was lost for >10 frames
+                            # Require higher confidence to resume track
+                            if conf < min_edge_conf:
+                                continue
 
-                    if handedness[[idx]] > 0:
-                        find_right = True
-                    elif handedness[[idx]] == 0:
-                        find_left = True
+                    subj = dict()
+                    subj['frame'] = t
+                    subj['det'] = True
+                    subj['det_box'] = boxes[[idx]]
+                    subj['det_handedness'] = handedness[[idx]]
+                    subj['is_near_edge'] = is_near_edge
+
+
+                    if (not find_right and handedness[[idx]] > 0) or (not find_left and handedness[[idx]]==0):
+                        if id in tracks:
+                            tracks[id].append(subj)
+                        else:
+                            tracks[id] = [subj]
+
+                        track_last_seen[id] = t  # Update last seen time
+
+                        if handedness[[idx]] > 0:
+                            find_right = True
+                        elif handedness[[idx]] == 0:
+                            find_left = True
     tracks = np.array(tracks, dtype=object)
     boxes_ = np.array(boxes_, dtype=object)
 
