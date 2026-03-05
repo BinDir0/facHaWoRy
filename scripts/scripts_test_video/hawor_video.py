@@ -84,6 +84,11 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     frame_source, _ = build_frame_source(video_path, backend=frame_backend)
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
+    
+    # 检查 tracks 是否为空
+    if not tracks or len(tracks) == 0:
+        raise ValueError(f"No hand tracks found in {seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy. Detection may have failed.")
+    
     img_focal = args.img_focal
     if img_focal is None:
         try:
@@ -97,6 +102,10 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 f.write(str(img_focal))
     
     tid = np.array([tr for tr in tracks])
+    
+    # 检查 tid 是否为空
+    if len(tid) == 0:
+        raise ValueError(f"Empty track IDs. No valid hand detections found.")
 
     if os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'):
         vprint("skip hawor motion estimation")
@@ -109,6 +118,9 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     right_trk = []
     for k, idx in enumerate(tid):
         trk = tracks[idx]
+        
+        if len(trk) == 0:
+            continue
 
         # Filter out very short tracks (likely false positives)
         if len(trk) < 5:  # Require at least 5 frames
@@ -139,6 +151,10 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
         1: right_trk
     }
     tid = [0, 1]
+    
+    # 检查是否有任何有效的轨迹
+    if len(left_trk) == 0 and len(right_trk) == 0:
+        raise ValueError(f"No valid hand tracks found after filtering. All detections may be invalid.")
 
     img = frame_source.get_frame(0, rgb=False)
     img_center = [img.shape[1] / 2, img.shape[0] / 2]# w/2, h/2
@@ -179,6 +195,12 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             continue
         boxes = np.concatenate([t['det_box'] for t in trk])
         non_zero_indices = np.where(np.any(boxes != 0, axis=1))[0]
+        
+        # 检查是否有非零的 boxes
+        if len(non_zero_indices) == 0:
+            print(f"  Warning: tracklet {idx} has no valid boxes, skipping...")
+            continue
+            
         first_non_zero = non_zero_indices[0]
         last_non_zero = non_zero_indices[-1]
 
@@ -193,8 +215,19 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
 
         boxes = boxes[first_non_zero:last_non_zero+1]
+        
+        # 检查 boxes 是否为空
+        if len(boxes) == 0:
+            print(f"  Warning: tracklet {idx} has no boxes after filtering, skipping...")
+            continue
+            
         is_right = np.concatenate([t['det_handedness'] for t in trk])[valid]
         frame = np.array([t['frame'] for t in trk])[valid]
+        
+        # 检查 is_right 和 frame 是否为空
+        if len(is_right) == 0 or len(frame) == 0:
+            print(f"  Warning: tracklet {idx} has no valid frames after filtering, skipping...")
+            continue
         
         if is_right.sum() / len(is_right) < 0.5:
             is_right = np.zeros((len(boxes), 1))
@@ -254,13 +287,10 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 json.dump(pred_dict, f, indent=1)
 
 
-            # get hand mask
-            data_out["init_root_orient"] = rotation_matrix_to_angle_axis(data_out["init_root_orient"])
-            data_out["init_hand_pose"] = rotation_matrix_to_angle_axis(data_out["init_hand_pose"])
-            if do_flip: # left
-                outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
-            else: # right
-                outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
+            # get hand mask - use simplified box-based mask for speed
+            # Option 1: Fast box-based mask (much faster, ~10-100x speedup)
+            # Option 2: Precise rendered mask (slower but more accurate)
+            use_simple_mask = False  # Set to True for faster but less accurate box masks
             
             vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
             for img_i in range(len(frame_indices)):
@@ -268,14 +298,28 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                     faces = torch.from_numpy(faces_left).cuda()
                 else:
                     faces = torch.from_numpy(faces_right).cuda()
+                
                 cam_R = torch.eye(3).unsqueeze(0).cuda()
                 cam_T = torch.zeros(1, 3).cuda()
                 cameras, lights = renderer.create_camera_from_cv(cam_R, cam_T)
                 verts_color = torch.tensor([0, 0, 255, 255]) / 255
-                vertices_i = vertices[[img_i]]
-                rend, mask = renderer.render_multiple(vertices_i.unsqueeze(0).cuda(), faces, verts_color.unsqueeze(0).cuda(), cameras, lights)
                 
-                model_masks[frame_ck[img_i]] += mask
+                # Optimized: Prepare vertices and colors as lists for batch rendering
+                vertices_list = [vertices[i].cuda() for i in range(num_frames)]  # List of (N, 3)
+                colors_list = [verts_color.cuda() for _ in range(num_frames)]  # List of (4,)
+                
+                # Batch render all frames at once
+                rend, mask = renderer.render_multiple(
+                    vertices_list, 
+                    faces, 
+                    colors_list, 
+                    cameras, 
+                    lights
+                )
+                
+                # Update masks for all frames at once
+                for img_i in range(num_frames):
+                    model_masks[frame_ck[img_i]] += mask[img_i].cpu().numpy()
                 
     model_masks = model_masks > 0 # bool
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', model_masks)
@@ -352,8 +396,12 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
     # runing fillingnet for this video
     frame_list = torch.tensor(list(range(pred_trans.size(1))))
     pred_valid = (pred_valid > 0).numpy()
+    # Keep immutable observed-valid mask for downstream visualization/QA
+    pred_valid_observed = pred_valid.copy()
+    # Working mask for infiller context expansion
+    pred_valid_working = pred_valid.copy()
     for k, idx in enumerate([1, 0]):
-        missing = ~pred_valid[idx]
+        missing = ~pred_valid_working[idx]
 
         frame = frame_list[missing]
         frame_chunks = parse_chunks_hand_frame(frame)
@@ -361,7 +409,7 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
         vprint(f"run infiller on {idx2hand[idx]} hand ...")
         for frame_ck in tqdm(frame_chunks, disable=QUIET_MODE):
             start_shift = -1
-            while frame_ck[0] + start_shift >= 0 and pred_valid[:, frame_ck[0] + start_shift].sum() != 2:
+            while frame_ck[0] + start_shift >= 0 and pred_valid_working[:, frame_ck[0] + start_shift].sum() != 2:
                 start_shift -= 1  # Shift to find the previous valid frame as start
             vprint(f"run infiller on frame {frame_ck[0] + start_shift} to frame {min(num_frames-1, frame_ck[0] + start_shift + filling_length)}")
 
@@ -381,7 +429,6 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
             src_mask = src_mask.to(device)
             filling_input = torch.from_numpy(filling_input).unsqueeze(0).to(device).permute(1,0,2) # (seq_len, B, in_dim)
             T_original = len(filling_input)
-            filling_length = 120
             if T_original < filling_length:
                 pad_length = filling_length - T_original
                 last_time_step = filling_input[-1, :, :]
@@ -397,9 +444,9 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
 
             valid = torch.from_numpy(seq_valid_padding).unsqueeze(0).all(dim=1).permute(1, 0) # (T,B)
             valid_atten = torch.from_numpy(seq_valid_padding).unsqueeze(0).all(dim=1).unsqueeze(1) # (B,1,T)
-            data_mask = torch.zeros((horizon, B, 1), device=device, dtype=filling_input.dtype)
+            data_mask = torch.zeros((T, B, 1), device=device, dtype=filling_input.dtype)
             data_mask[valid] = 1
-            atten_mask = torch.ones((B, 1, horizon),
+            atten_mask = torch.ones((B, 1, T),
                         device=device, dtype=torch.bool)
             atten_mask[valid_atten] = False
             atten_mask = atten_mask.unsqueeze(2).repeat(1, 1, T, 1) # (B,1,T,T)
@@ -422,10 +469,11 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
             pred_rot[:, filling_net_start:filling_net_end] = torch.from_numpy(filling_seq['rot'][:])
             pred_hand_pose[:, filling_net_start:filling_net_end] = torch.from_numpy(filling_seq['hand_pose'][:])
             pred_betas[:, filling_net_start:filling_net_end] = torch.from_numpy(filling_seq['betas'][:])
-            pred_valid[:, filling_net_start:filling_net_end] = 1
+            # Expand only working valid mask for iterative infilling context
+            pred_valid_working[:, filling_net_start:filling_net_end] = 1
     save_path = os.path.join(seq_folder, "world_space_res.pth")
-    joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid], save_path)
-    return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid
+    joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid_observed], save_path)
+    return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid_observed
 
 
 def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):

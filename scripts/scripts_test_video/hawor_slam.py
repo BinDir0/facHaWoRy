@@ -58,10 +58,16 @@ def build_metric3d_runner(weight_path='thirdparty/Metric3D/weights/metric_depth_
 
 def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=8):
     # File and folders
-    file = args.video_path
-    video_root = os.path.dirname(file)
-    video = os.path.basename(file).split('.')[0]
-    seq_folder = os.path.join(video_root, video)
+    # 如果提供了 seq_folder，使用它；否则从 video_path 推导（向后兼容）
+    if seq_folder is None:
+        if hasattr(args, 'seq_folder') and args.seq_folder:
+            seq_folder = args.seq_folder
+        else:
+            file = args.video_path
+            video_root = os.path.dirname(file)
+            video = os.path.basename(file).split('.')[0]
+            seq_folder = os.path.join(video_root, video)
+    
     os.makedirs(seq_folder, exist_ok=True)
     video_folder = os.path.join(video_root, video)
 
@@ -75,7 +81,10 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
 
     ##### Run SLAM #####
     # Use Masking
-    masks = np.load(f'{video_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', allow_pickle=True)
+    masks_path = f'{video_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy'
+    if not os.path.exists(masks_path):
+        raise ValueError(f"Model masks not found at {masks_path}. Please run Stage 1 (motion estimation) first.")
+    masks = np.load(masks_path, allow_pickle=True)
     masks = torch.from_numpy(masks)
     vprint(masks.shape)
 
@@ -83,19 +92,19 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     focal = args.img_focal
     if focal is None:
         try:
-            with open(os.path.join(video_folder, 'est_focal.txt'), 'r') as file:
+            with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as file:
                 focal = file.read()
                 focal = float(focal)
         except:
             
             vprint('No focal length provided')
             focal = 600
-            with open(os.path.join(video_folder, 'est_focal.txt'), 'w') as file:
+            with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as file:
                 file.write(str(focal))
     calib = np.array(est_calib(frame_source)) # [focal, focal, cx, cy]
     center = calib[2:]        
     calib[:2] = focal
-    
+
     # Droid-slam with masking
     droid, traj = run_slam(frame_source, masks=masks, calib=calib)
     n = droid.video.counter.value

@@ -1,8 +1,26 @@
 # Project specific data and submodule
 
-/example/video_0
-/weights
+/example/
+/weights/
 /app_pytorch3d*
+
+# Large data files
+filter_results*.json
+*.npy
+*.zarr/
+
+# Model weights in thirdparty
+thirdparty/DROID-SLAM/weights/
+thirdparty/Metric3D/weights/
+thirdparty/Metric3D/training/kitti_json_files/*.json
+thirdparty/Metric3D/media/
+
+# Intermediate outputs
+comparison_key_frames/
+detector_comparison_*/
+visualize/
+visualize_low_score/
+_DATA/
 
 .vscode/
 **/.DS_Store

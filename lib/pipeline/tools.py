@@ -130,7 +130,29 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
                         if id in tracks:
                             tracks[id].append(subj)
                         else:
-                            tracks[id] = [subj]
+                            id = track_id[idx]
+                        subj = dict()
+                        subj['frame'] = t
+                        subj['det'] = True
+                        subj['det_box'] = boxes[[idx]]
+                        subj['det_handedness'] = handedness[[idx]]
+                        
+                        if (not find_right and handedness[[idx]] > 0) or (not find_left and handedness[[idx]] == 0):
+                            if id in tracks:
+                                tracks[id].append(subj)
+                            else:
+                                tracks[id] = [subj]
+
+                            if handedness[[idx]] > 0:
+                                find_right = True
+                            elif handedness[[idx]] == 0:
+                                find_left = True
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
                         track_last_seen[id] = t  # Update last seen time
 
