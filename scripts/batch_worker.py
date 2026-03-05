@@ -125,9 +125,22 @@ def validate_stage_output(stage: str, seq_folder: Path, start_idx: int, end_idx:
         return
 
     if stage == "motion":
-        assert (tracks_dir / "frame_chunks_all.npy").exists(), "frame_chunks_all.npy missing"
-        assert (tracks_dir / "model_masks.npy").exists(), "model_masks.npy missing"
-        model_masks = np.load(tracks_dir / "model_masks.npy", allow_pickle=True)
+        # Check for incomplete outputs and auto-fix
+        frame_chunks_file = tracks_dir / "frame_chunks_all.npy"
+        model_masks_file = tracks_dir / "model_masks.npy"
+
+        if frame_chunks_file.exists() and not model_masks_file.exists():
+            # Incomplete output detected - remove to force re-run
+            import sys
+            print(f"Warning: Incomplete motion output detected for {seq_folder}", file=sys.stderr)
+            print(f"  - frame_chunks_all.npy exists but model_masks.npy missing", file=sys.stderr)
+            print(f"  - Removing incomplete output to force re-run", file=sys.stderr)
+            frame_chunks_file.unlink()
+            raise AssertionError("Incomplete motion output - removed and will retry")
+
+        assert frame_chunks_file.exists(), "frame_chunks_all.npy missing"
+        assert model_masks_file.exists(), "model_masks.npy missing"
+        model_masks = np.load(model_masks_file, allow_pickle=True)
         assert model_masks.ndim == 3, "model_masks should be (T,H,W)"
         return
 
