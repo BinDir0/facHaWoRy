@@ -76,6 +76,7 @@ class BatchScheduler:
         chunk_batch_size: int,
         metric3d_batch_size: int,
         detect_batch_size: int,
+        detect_video_batch_size: int,
         frame_backend: str,
         scheduler_mode: str,
         persistent_worker: bool,
@@ -93,6 +94,7 @@ class BatchScheduler:
         self.chunk_batch_size = chunk_batch_size
         self.metric3d_batch_size = metric3d_batch_size
         self.detect_batch_size = detect_batch_size
+        self.detect_video_batch_size = detect_video_batch_size
         self.frame_backend = frame_backend
         self.scheduler_mode = scheduler_mode
         self.persistent_worker = persistent_worker
@@ -376,25 +378,125 @@ class BatchScheduler:
         # Ensure stage models are loaded
         runtime.ensure_runner(stage)
 
-        # Process videos from queue
-        while True:
-            try:
-                video_path = video_queue.get(timeout=1)
-            except:
-                continue
+        # Check if we should use multi-video batch processing for detect_track
+        if stage == 'detect_track' and self.detect_video_batch_size > 1:
+            self._process_detect_track_multivideo(gpu, video_queue, result_queue, runtime)
+        else:
+            # Standard single-video processing
+            while True:
+                try:
+                    video_path = video_queue.get(timeout=1)
+                except:
+                    continue
 
-            if video_path is None:
+                if video_path is None:
+                    break
+
+                # Process single video with runtime
+                success = self.run_single_video_with_runtime(video_path, stage, gpu, runtime)
+
+                # Report result
+                result_queue.put({
+                    "video": video_path,
+                    "success": success,
+                    "gpu": gpu,
+                })
+
+    def _process_detect_track_multivideo(self, gpu: int, video_queue: mp.Queue, result_queue: mp.Queue, runtime):
+        """Process multiple videos concurrently using cross-video batching for detect_track stage."""
+        sys.path.insert(0, str(PROJECT_ROOT / "lib" / "pipeline"))
+        from tools import detect_track_multivideo
+        from batch_worker import get_seq_folder, is_stage_complete
+        sys.path.insert(0, str(PROJECT_ROOT / "lib"))
+        from frame_source import build_frame_source
+
+        batch_size = self.detect_video_batch_size
+
+        while True:
+            # Pull multiple videos from queue
+            video_batch = []
+            for _ in range(batch_size):
+                try:
+                    vp = video_queue.get(timeout=1)
+                    if vp is None:
+                        break
+                    video_batch.append(vp)
+                except:
+                    break
+
+            if not video_batch:
                 break
 
-            # Process single video with runtime
-            success = self.run_single_video_with_runtime(video_path, stage, gpu, runtime)
+            # Check which videos need processing
+            videos_to_process = []
+            for vp in video_batch:
+                seq_folder = get_seq_folder(vp)
+                if self.resume and is_stage_complete('detect_track', seq_folder, fast_check=True):
+                    # Skip already completed
+                    result_queue.put({"video": vp, "success": True, "gpu": gpu})
+                else:
+                    videos_to_process.append(vp)
 
-            # Report result
-            result_queue.put({
-                "video": video_path,
-                "success": success,
-                "gpu": gpu,
-            })
+            if not videos_to_process:
+                continue
+
+            # Build frame sources
+            video_sources = []
+            for idx, vp in enumerate(videos_to_process):
+                try:
+                    fs = build_frame_source(vp, backend=self.frame_backend)
+                    video_sources.append((idx, fs))
+                except Exception as e:
+                    print(f"Error building frame source for {vp}: {e}")
+                    result_queue.put({"video": vp, "success": False, "gpu": gpu})
+
+            if not video_sources:
+                continue
+
+            # Process batch with multi-video detection
+            try:
+                results = detect_track_multivideo(
+                    video_sources,
+                    thresh=0.35,
+                    hand_det_model=runtime.hand_det_model
+                )
+
+                # Save results for each video
+                for idx, vp in enumerate(videos_to_process):
+                    if idx not in results:
+                        result_queue.put({"video": vp, "success": False, "gpu": gpu})
+                        continue
+
+                    try:
+                        boxes, tracks = results[idx]
+                        seq_folder = get_seq_folder(vp)
+
+                        # Get frame range
+                        fs = build_frame_source(vp, backend=self.frame_backend)
+                        start_idx = 0
+                        end_idx = len(fs)
+
+                        # Save outputs
+                        output_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+                        output_dir.mkdir(parents=True, exist_ok=True)
+
+                        np.save(output_dir / "model_boxes.npy", boxes)
+                        np.save(output_dir / "model_tracks.npy", tracks)
+
+                        result_queue.put({"video": vp, "success": True, "gpu": gpu})
+                    except Exception as e:
+                        print(f"Error saving results for {vp}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        result_queue.put({"video": vp, "success": False, "gpu": gpu})
+
+            except Exception as e:
+                print(f"Error in multi-video batch processing: {e}")
+                import traceback
+                traceback.print_exc()
+                # Mark all videos as failed
+                for vp in videos_to_process:
+                    result_queue.put({"video": vp, "success": False, "gpu": gpu})
 
     def run_single_video_with_runtime(self, video_path: str, stage: str, gpu: int, runtime) -> bool:
         """Run a single stage for a single video using existing runtime."""
@@ -801,6 +903,12 @@ def get_parser():
         help="MUST be 1 - frame-level batching breaks tracker state",
     )
     parser.add_argument(
+        "--detect_video_batch_size",
+        type=int,
+        default=8,
+        help="Number of videos to process concurrently per GPU (cross-video batching for detect_track stage)",
+    )
+    parser.add_argument(
         "--frame_backend",
         type=str,
         default="decord",
@@ -905,6 +1013,7 @@ def main():
     print(f"Max retries: {args.retries}")
     print(f"Max stage retries (wave): {args.max_stage_retries}")
     print(f"Detect batch size (detect_track): {args.detect_batch_size}")
+    print(f"Detect video batch size (detect_track multi-video): {args.detect_video_batch_size}")
     print(f"Chunk batch size (motion): {args.chunk_batch_size}")
     print(f"Metric3D batch size (slam): {args.metric3d_batch_size}")
     print(f"Frame backend: {args.frame_backend}")
@@ -925,6 +1034,7 @@ def main():
         chunk_batch_size=args.chunk_batch_size,
         metric3d_batch_size=args.metric3d_batch_size,
         detect_batch_size=args.detect_batch_size,
+        detect_video_batch_size=args.detect_video_batch_size,
         frame_backend=args.frame_backend,
         scheduler_mode=args.scheduler_mode,
         persistent_worker=args.persistent_worker,

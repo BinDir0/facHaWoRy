@@ -61,11 +61,21 @@ def get_track_range(seq_folder: Path, fast=False):
 
     Args:
         seq_folder: Sequence folder path
-        fast: If True, assume tracks_0_N format (faster, no glob)
+        fast: If True, use ultra-fast method (read from cache file)
     """
     if fast:
+        # Ultra-fast mode: read from .track_range cache file
+        cache_file = seq_folder / ".track_range"
+        if cache_file.exists():
+            try:
+                content = cache_file.read_text().strip()
+                start_idx, end_idx = map(int, content.split(","))
+                return start_idx, end_idx
+            except:
+                pass  # Fallback to directory scan
+
         # Fast mode: assume standard naming tracks_0_N
-        # Try to find it without globbing
+        # Try to find it without full iteration
         for p in seq_folder.iterdir():
             if p.is_dir() and p.name.startswith("tracks_0_"):
                 parts = p.name.split("_")
@@ -73,6 +83,8 @@ def get_track_range(seq_folder: Path, fast=False):
                     try:
                         start_idx = int(parts[1])
                         end_idx = int(parts[2])
+                        # Cache for next time
+                        cache_file.write_text(f"{start_idx},{end_idx}")
                         return start_idx, end_idx
                     except ValueError:
                         pass
@@ -96,6 +108,11 @@ def get_track_range(seq_folder: Path, fast=False):
 
     track_dirs.sort(key=lambda x: (x[1], x[0]))
     start_idx, end_idx, _ = track_dirs[-1]
+
+    # Cache the result
+    cache_file = seq_folder / ".track_range"
+    cache_file.write_text(f"{start_idx},{end_idx}")
+
     return start_idx, end_idx
 
 
@@ -142,17 +159,32 @@ def is_stage_complete(stage: str, seq_folder: Path, fast_check=False):
     Args:
         stage: Stage name
         seq_folder: Sequence folder path
-        fast_check: If True, only check file existence without loading/validating content
+        fast_check: If True, use ultra-fast check (only check .done marker file)
     """
+    if fast_check:
+        # Ultra-fast check: only check .done marker file
+        done_marker = seq_folder / f".{stage}.done"
+        if done_marker.exists():
+            return True
+        # If no marker, fall through to file existence check
+
     try:
         start_idx, end_idx = get_track_range(seq_folder, fast=fast_check)
 
         if fast_check:
             # Fast check: only verify files exist, don't load them
-            return validate_stage_output_fast(stage, seq_folder, start_idx, end_idx)
+            result = validate_stage_output_fast(stage, seq_folder, start_idx, end_idx)
+            # Create .done marker for next time
+            if result:
+                done_marker = seq_folder / f".{stage}.done"
+                done_marker.touch()
+            return result
         else:
             # Full validation: load and check content
             validate_stage_output(stage, seq_folder, start_idx, end_idx)
+            # Create .done marker
+            done_marker = seq_folder / f".{stage}.done"
+            done_marker.touch()
             return True
     except Exception:
         return False
