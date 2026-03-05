@@ -1,8 +1,7 @@
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from torchvision.transforms import Normalize, ToTensor, Compose
-import numpy as np
-import cv2
 
 from lib.core import constants
 from lib.utils.imutils import crop, boxes_2_cs
@@ -12,13 +11,14 @@ class TrackDatasetEval(Dataset):
     """
     Track Dataset Class - Load images/crops of the tracked boxes.
     """
-    def __init__(self, imgfiles, boxes, 
+    def __init__(self, frame_source, frame_indices, boxes,
                  crop_size=256, dilate=1.0,
                 img_focal=None, img_center=None, normalization=True,
                 item_idx=0, do_flip=False):
         super(TrackDatasetEval, self).__init__()
 
-        self.imgfiles = imgfiles
+        self.frame_source = frame_source
+        self.frame_indices = np.asarray(frame_indices)
         self.crop_size = crop_size
         self.normalization = normalization
         self.normalize_img = Compose([
@@ -36,43 +36,41 @@ class TrackDatasetEval(Dataset):
         self.do_flip = do_flip
 
     def __len__(self):
-        return len(self.imgfiles)
-    
-    
+        return len(self.frame_indices)
+
+
     def __getitem__(self, index):
         item = {}
-        imgfile = self.imgfiles[index]
+        frame_idx = int(self.frame_indices[index])
         scale = self.scales[index] * self.box_dilate
-        center = self.centers[index]
+        center = self.centers[index].copy()
 
         img_focal = self.img_focal
         img_center = self.img_center
 
-        img = cv2.imread(imgfile)[:,:,::-1]
+        img = self.frame_source.get_frame(frame_idx, rgb=True)
         if self.do_flip:
             img = img[:, ::-1, :]
             img_width = img.shape[1]
             center[0] = img_width - center[0] - 1
-        img_crop = crop(img, center, scale, 
-                        [self.crop_size, self.crop_size], 
+        img_crop = crop(img, center, scale,
+                        [self.crop_size, self.crop_size],
                         rot=0).astype('uint8')
-        # cv2.imwrite('debug_crop.png', img_crop[:,:,::-1])
-        
+
         if self.normalization:
             img_crop = self.normalize_img(img_crop)
         else:
             img_crop = torch.from_numpy(img_crop)
         item['img'] = img_crop
-        
+
         if self.do_flip:
-            # center[0] = img_width - center[0] - 1 
             item['do_flip'] = torch.tensor(1).float()
         item['img_idx'] = torch.tensor(index).long()
+        item['frame_idx'] = torch.tensor(frame_idx).long()
         item['scale'] = torch.tensor(scale).float()
         item['center'] = torch.tensor(center).float()
         item['img_focal'] = torch.tensor(img_focal).float()
         item['img_center'] = torch.tensor(img_center).float()
-        
 
         return item
 

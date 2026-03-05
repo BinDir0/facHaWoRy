@@ -23,7 +23,7 @@ def render_reconstruction(input_video, img_focal):
     args.vis_mode = 'world'
     args.img_focal = img_focal
     
-    start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
+    start_idx, end_idx, seq_folder, frame_source = detect_track_video(args)
 
     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
 
@@ -97,9 +97,8 @@ def render_reconstruction(input_video, img_focal):
         output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         if not os.path.exists(output_pth):
             os.makedirs(output_pth)
-        image_names = imgfiles[vis_start:vis_end]
         print(f"vis {vis_start} to {vis_end}")
-        vis_video_path = run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end], interactive=False)
+        vis_video_path = run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, frame_source=frame_source, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end], interactive=False)
     elif args.vis_mode == 'cam':
         # output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
         # if not os.path.exists(output_pth):

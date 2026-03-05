@@ -5,25 +5,26 @@ import os
 import joblib
 import numpy as np
 import torch
-import cv2
 from tqdm import tqdm
-from glob import glob
-from natsort import natsorted
 
+from lib.pipeline.frame_source import build_frame_source
 from lib.pipeline.tools import parse_chunks, parse_chunks_hand_frame
 from lib.models.hawor import HAWOR
 from lib.eval_utils.custom_utils import cam2world_convert, load_slam_cam
-from lib.eval_utils.custom_utils import interpolate_bboxes
+from lib.eval_utils.custom_utils import interpolate_bboxes, validate_motion_velocity
 from lib.eval_utils.filling_utils import filling_postprocess, filling_preprocess
 from lib.vis.renderer import Renderer
 from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
 from hawor.utils.rotation import angle_axis_to_rotation_matrix, rotation_matrix_to_angle_axis
 from infiller.lib.model.network import TransformerModel
 
-# Global model caches to avoid reloading across videos in the same process
-_hawor_model_cache = None
-_hawor_model_cfg_cache = None
-_infiller_model_cache = None
+# Check if we should suppress verbose output
+QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
+
+def vprint(*args, **kwargs):
+    """Print only if not in quiet mode."""
+    if not QUIET_MODE:
+        print(*args, **kwargs)
 
 def load_hawor(checkpoint_path):
     from pathlib import Path
@@ -41,29 +42,46 @@ def load_hawor(checkpoint_path):
     model = HAWOR.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
     return model, model_cfg
 
+def build_motion_runner(checkpoint_path, device=None):
+    model, model_cfg = load_hawor(checkpoint_path)
+    device = device or (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+    model = model.to(device)
+    model.eval()
+    return {
+        'model': model,
+        'model_cfg': model_cfg,
+        'device': device,
+    }
 
 
-def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
-    global _hawor_model_cache, _hawor_model_cfg_cache
-    if _hawor_model_cache is not None:
-        model = _hawor_model_cache
-        model_cfg = _hawor_model_cfg_cache
-    else:
-        model, model_cfg = load_hawor(args.checkpoint)
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        model = model.to(device)
-        model.eval()
-        _hawor_model_cache = model
-        _hawor_model_cfg_cache = model_cfg
+def build_infiller_runner(weight_path, device=None):
+    device = device or (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+    ckpt = torch.load(weight_path, map_location=device)
+    pos_dim = 3
+    shape_dim = 10
+    num_joints = 15
+    rot_dim = (num_joints + 1) * 6 # rot6d
+    repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
+    nhead = 8 # repr_dim = 154
+    horizon = 120
+    filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
+    filling_model.to(device)
+    filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
+    filling_model.eval()
+    return {
+        'model': filling_model,
+        'device': device,
+        'horizon': horizon,
+    }
 
-    # 使用 seq_folder（即 video_out_dir）来构建图像路径
-    # 这样与 detect_track_video_custom 中保存图像的路径一致
-    img_folder = os.path.join(seq_folder, 'extracted_images')
-    imgfiles = np.array(natsorted(glob(f'{img_folder}/*.jpg')))
-    
-    # 检查图像文件是否存在
-    if len(imgfiles) == 0:
-        raise ValueError(f"No images found in {img_folder}. Please extract frames first.")
+
+def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None):
+    motion_runner = motion_runner or build_motion_runner(args.checkpoint)
+    model = motion_runner['model']
+
+    video_path = args.video_path
+    frame_backend = getattr(args, 'frame_backend', 'decord')
+    frame_source, _ = build_frame_source(video_path, backend=frame_backend)
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
     
@@ -74,14 +92,14 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     img_focal = args.img_focal
     if img_focal is None:
         try:
-            with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as file:
-                img_focal = file.read()
+            with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as f:
+                img_focal = f.read()
                 img_focal = float(img_focal)
         except:
             img_focal = 600
-            print(f'No focal length provided, use default {img_focal}')
-            with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as file:
-                file.write(str(img_focal))
+            vprint(f'No focal length provided, use default {img_focal}')
+            with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as f:
+                f.write(str(img_focal))
     
     tid = np.array([tr for tr in tracks])
     
@@ -90,13 +108,11 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
         raise ValueError(f"Empty track IDs. No valid hand detections found.")
 
     if os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'):
-        print("skip hawor motion estimation")
+        vprint("skip hawor motion estimation")
         frame_chunks_all = joblib.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
         return frame_chunks_all, img_focal
 
-    # 获取视频名称用于日志
-    video_name = os.path.basename(seq_folder) if os.path.exists(seq_folder) else "unknown"
-    print(f'Running hawor on {video_name} ...')
+    vprint(f'Running hawor on {os.path.basename(video_path)} ...')
 
     left_trk = []
     right_trk = []
@@ -106,18 +122,24 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
         if len(trk) == 0:
             continue
 
+        # Filter out very short tracks (likely false positives)
+        if len(trk) < 5:  # Require at least 5 frames
+            continue
+
+        # Check average confidence
+        confs = [t['det_box'][0, 4] for t in trk if t['det']]
+        if len(confs) == 0 or np.mean(confs) < 0.3:  # Require avg confidence >= 0.3
+            continue
+
+        # Check if track is mostly near edges (likely hand leaving/entering frame)
+        if 'is_near_edge' in trk[0]:
+            edge_ratio = sum(1 for t in trk if t.get('is_near_edge', False)) / len(trk)
+            if edge_ratio > 0.7:  # If >70% detections are near edge, likely unstable
+                continue
+
         valid = np.array([t['det'] for t in trk])
-        
-        # 检查是否有有效的检测
-        if valid.sum() == 0:
-            continue
-            
         is_right = np.concatenate([t['det_handedness'] for t in trk])[valid]
-        
-        # 检查 is_right 是否为空
-        if len(is_right) == 0:
-            continue
-        
+
         if is_right.sum() / len(is_right) < 0.5:
             left_trk.extend(trk)
         else:
@@ -134,12 +156,10 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     if len(left_trk) == 0 and len(right_trk) == 0:
         raise ValueError(f"No valid hand tracks found after filtering. All detections may be invalid.")
 
-    img = cv2.imread(imgfiles[0])
-    if img is None:
-        raise ValueError(f"Failed to read first image: {imgfiles[0]}")
-    img_center = [img.shape[1] / 2, img.shape[0] / 2]# w/2, h/2  
+    img = frame_source.get_frame(0, rgb=False)
+    img_center = [img.shape[1] / 2, img.shape[0] / 2]# w/2, h/2
     H, W = img.shape[:2]
-    model_masks = np.zeros((len(imgfiles), H, W))
+    model_masks = np.zeros((len(frame_source), H, W))
 
     bin_size = 128
     max_faces_per_bin = 20000
@@ -166,7 +186,7 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
 
     frame_chunks_all = defaultdict(list)
     for idx in tid:
-        print(f"tracklet {idx}:")
+        vprint(f"tracklet {idx}:")
         trk = final_tracks[idx]
 
         # interp bboxes
@@ -183,8 +203,15 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             
         first_non_zero = non_zero_indices[0]
         last_non_zero = non_zero_indices[-1]
+
+        # Interpolate bboxes with size consistency check
         boxes[first_non_zero:last_non_zero+1] = interpolate_bboxes(boxes[first_non_zero:last_non_zero+1])
-        valid[first_non_zero:last_non_zero+1] = True
+
+        # Apply motion velocity validation to filter implausible movements
+        velocity_valid = validate_motion_velocity(boxes[first_non_zero:last_non_zero+1])
+
+        # Update valid mask: only frames that pass both interpolation and velocity check
+        valid[first_non_zero:last_non_zero+1] = velocity_valid
 
 
         boxes = boxes[first_non_zero:last_non_zero+1]
@@ -214,25 +241,22 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             continue
 
         for frame_ck, boxes_ck in zip(frame_chunks, boxes_chunks):
-            # 检查 frame_ck 和 boxes_ck 是否为空
-            if len(frame_ck) == 0 or len(boxes_ck) == 0:
-                print(f"  Warning: Empty chunk, skipping...")
-                continue
-                
-            print(f"inference from frame {frame_ck[0]} to {frame_ck[-1]}")
-            img_ck = imgfiles[frame_ck]
-            
-            # 检查 img_ck 是否为空
-            if len(img_ck) == 0:
-                print(f"  Warning: No images found for frames {frame_ck}, skipping...")
-                continue
-                
-            if len(is_right) > 0 and is_right[0] > 0:
+            vprint(f"inference from frame {frame_ck[0]} to {frame_ck[-1]}")
+            frame_indices = np.array(frame_ck, dtype=np.int64)
+            if is_right[0] > 0:
                 do_flip = False
             else:
                 do_flip = True
-                
-            results = model.inference(img_ck, boxes_ck, img_focal=img_focal, img_center=img_center, do_flip=do_flip)
+
+            results = model.inference(
+                frame_source,
+                frame_indices,
+                boxes_ck,
+                img_focal=img_focal,
+                img_center=img_center,
+                do_flip=do_flip,
+                chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
+            )
 
             data_out = {
                 "init_root_orient": results["pred_rotmat"][None, :, 0], # (B, T, 3, 3)
@@ -268,35 +292,8 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
             # Option 2: Precise rendered mask (slower but more accurate)
             use_simple_mask = False  # Set to True for faster but less accurate box masks
             
-            if use_simple_mask:
-                # Fast: Use detection boxes to create simple rectangular masks
-                # This is much faster than rendering but less precise
-                # boxes_ck shape: (T, 5) where each row is [x1, y1, x2, y2, conf]
-                for img_i in range(len(boxes_ck)):
-                    box = boxes_ck[img_i]
-                    if len(box) >= 4 and box[0] >= 0:  # Valid box
-                        x1, y1, x2, y2 = box[0:4].astype(int)
-                        # Expand box slightly for better coverage
-                        margin = 10
-                        x1 = max(0, x1 - margin)
-                        y1 = max(0, y1 - margin)
-                        x2 = min(W, x2 + margin)
-                        y2 = min(H, y2 + margin)
-                        if x2 > x1 and y2 > y1:  # Valid box dimensions
-                            model_masks[frame_ck[img_i], y1:y2, x1:x2] = 1
-            else:
-                # Slow: Precise rendering (original method)
-                data_out["init_root_orient"] = rotation_matrix_to_angle_axis(data_out["init_root_orient"])
-                data_out["init_hand_pose"] = rotation_matrix_to_angle_axis(data_out["init_hand_pose"])
-                if do_flip: # left
-                    outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
-                else: # right
-                    outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
-                
-                vertices = outputs["vertices"][0]  # (T, N, 3) - keep on GPU
-                num_frames = len(img_ck)
-                
-                # Prepare faces and camera once (reused for all frames)
+            vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
+            for img_i in range(len(frame_indices)):
                 if do_flip:
                     faces = torch.from_numpy(faces_left).cuda()
                 else:
@@ -329,44 +326,24 @@ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
     joblib.dump(frame_chunks_all, f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
     return frame_chunks_all, img_focal
 
-def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
-    global _infiller_model_cache
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    horizon = 120
+def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
+    return run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None)
 
-    if _infiller_model_cache is not None:
-        filling_model = _infiller_model_cache
-    else:
-        # load infiller
-        weight_path = args.infiller_weight
-        ckpt = torch.load(weight_path, map_location=device)
-        pos_dim = 3
-        shape_dim = 10
-        num_joints = 15
-        rot_dim = (num_joints + 1) * 6 # rot6d
-        repr_dim = 2 * (pos_dim + shape_dim + rot_dim)
-        nhead = 8 # repr_dim = 154
-        filling_model = TransformerModel(seq_len=horizon, input_dim=repr_dim, d_model=384, nhead=nhead, d_hid=2048, nlayers=8, dropout=0.05, out_dim=repr_dim, masked_attention_stage=True)
-        filling_model.to(device)
-        filling_model.load_state_dict(ckpt['transformer_encoder_state_dict'])
-        filling_model.eval()
-        _infiller_model_cache = filling_model
 
-    # 优先使用 args.seq_folder（如果存在），否则从 args.video_path 构建
-    # 这样可以兼容 batch_process_holoassist_pipeline.py 的调用方式
-    if hasattr(args, 'seq_folder') and args.seq_folder:
-        seq_folder = args.seq_folder
-        img_folder = os.path.join(seq_folder, 'extracted_images')
-    else:
-        # 向后兼容：从 video_path 构建路径
-        file = args.video_path
-        video_root = os.path.dirname(file)
-        video = os.path.basename(file).split('.')[0]
-        seq_folder = os.path.join(video_root, video)
-        img_folder = f"{video_root}/{video}/extracted_images"
+def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_runner=None):
+    # load infiller
+    infiller_runner = infiller_runner or build_infiller_runner(args.infiller_weight)
+    filling_model = infiller_runner['model']
+    device = infiller_runner['device']
+    horizon = infiller_runner['horizon']
+
+    video_path = args.video_path
+    frame_backend = getattr(args, 'frame_backend', 'decord')
+    frame_source, _ = build_frame_source(video_path, backend=frame_backend)
+    seq_folder = os.path.join(os.path.dirname(video_path), os.path.basename(video_path).split('.')[0])
 
     # Previous steps
-    imgfiles = np.array(natsorted(glob(f'{img_folder}/*.jpg')))
+    num_frames = len(frame_source)
 
     idx2hand = ['left', 'right']
     filling_length = 120
@@ -374,11 +351,13 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
     fpath = os.path.join(seq_folder, f"SLAM/hawor_slam_w_scale_{start_idx}_{end_idx}.npz")
     R_w2c_sla_all, t_w2c_sla_all, R_c2w_sla_all, t_c2w_sla_all = load_slam_cam(fpath)
 
-    pred_trans = torch.zeros(2, len(imgfiles), 3)
-    pred_rot = torch.zeros(2, len(imgfiles), 3)
-    pred_hand_pose = torch.zeros(2, len(imgfiles), 45)
-    pred_betas = torch.zeros(2, len(imgfiles), 10)
-    pred_valid = torch.zeros((2, pred_betas.size(1)))    
+    pred_trans = torch.zeros(2, num_frames, 3)
+    pred_rot = torch.zeros(2, num_frames, 3)
+    pred_hand_pose = torch.zeros(2, num_frames, 45)
+    pred_betas = torch.zeros(2, num_frames, 10)
+    pred_valid = torch.zeros((2, pred_betas.size(1)))
+
+    max_slam_frames = min(pred_trans.shape[1], R_c2w_sla_all.shape[0], t_c2w_sla_all.shape[0])
 
     # camera space to world space
     tid = [0, 1]            
@@ -389,7 +368,12 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
             continue
 
         for frame_ck in frame_chunks:
-            print(f"from frame {frame_ck[0]} to {frame_ck[-1]}")                
+            frame_ck = np.asarray(frame_ck)
+            valid_frame_mask = frame_ck < max_slam_frames
+            if valid_frame_mask.sum() == 0:
+                continue
+            frame_ck = frame_ck[valid_frame_mask]
+            vprint(f"from frame {frame_ck[0]} to {frame_ck[-1]}")
             pred_path = os.path.join(seq_folder, 'cam_space', str(idx), f"{frame_ck[0]}_{frame_ck[-1]}.json")
             with open(pred_path, "r") as f:
                 pred_dict = json.load(f)
@@ -422,17 +406,17 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
         frame = frame_list[missing]
         frame_chunks = parse_chunks_hand_frame(frame)
 
-        print(f"run infiller on {idx2hand[idx]} hand ...")
-        for frame_ck in tqdm(frame_chunks):
+        vprint(f"run infiller on {idx2hand[idx]} hand ...")
+        for frame_ck in tqdm(frame_chunks, disable=QUIET_MODE):
             start_shift = -1
             while frame_ck[0] + start_shift >= 0 and pred_valid_working[:, frame_ck[0] + start_shift].sum() != 2:
                 start_shift -= 1  # Shift to find the previous valid frame as start
-            print(f"run infiller on frame {frame_ck[0] + start_shift} to frame {min(len(imgfiles)-1, frame_ck[0] + start_shift + filling_length)}")
+            vprint(f"run infiller on frame {frame_ck[0] + start_shift} to frame {min(num_frames-1, frame_ck[0] + start_shift + filling_length)}")
 
             frame_start = frame_ck[0]
             filling_net_start = max(0, frame_start + start_shift)
-            filling_net_end = min(len(imgfiles)-1, filling_net_start + filling_length)
-            seq_valid = pred_valid_working[:, filling_net_start:filling_net_end]
+            filling_net_end = min(num_frames-1, filling_net_start + filling_length)
+            seq_valid = pred_valid[:, filling_net_start:filling_net_end]
             filling_seq = {}
             filling_seq['trans'] = pred_trans[:, filling_net_start:filling_net_end].numpy()
             filling_seq['rot'] = pred_rot[:, filling_net_start:filling_net_end].numpy()
@@ -491,4 +475,7 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
     joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid_observed], save_path)
     return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid_observed
 
+
+def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
+    return run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_runner=None)
     

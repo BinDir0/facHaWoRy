@@ -81,19 +81,100 @@ def load_slam_cam(fpath):
     return R_w2c_sla, t_w2c_sla, R_c2w_sla, t_c2w_sla
 
 
-def interpolate_bboxes(bboxes):
-    T = bboxes.shape[0]  
+def validate_motion_velocity(bboxes, max_relative_velocity=3.0):
+    """
+    Validate motion velocity to detect physically implausible movements.
+    Uses relative velocity (movement relative to bbox size) instead of absolute pixels.
 
-    zero_indices = np.where(np.all(bboxes == 0, axis=1))[0]
+    Args:
+        bboxes: (T, 5) array of [x1, y1, x2, y2, conf]
+        max_relative_velocity: Maximum movement as multiple of bbox diagonal per frame
 
-    non_zero_indices = np.where(np.any(bboxes != 0, axis=1))[0]
+    Returns:
+        valid_mask: Boolean array indicating valid frames
+    """
+    T = bboxes.shape[0]
+    if T < 2:
+        return np.ones(T, dtype=bool)
 
-    if len(zero_indices) == 0:
+    # Calculate bbox centers and sizes
+    centers = np.stack([
+        (bboxes[:, 0] + bboxes[:, 2]) / 2,
+        (bboxes[:, 1] + bboxes[:, 3]) / 2
+    ], axis=1)
+
+    widths = bboxes[:, 2] - bboxes[:, 0]
+    heights = bboxes[:, 3] - bboxes[:, 1]
+    diagonals = np.sqrt(widths**2 + heights**2)
+
+    # Calculate frame-to-frame displacements
+    displacements = np.linalg.norm(centers[1:] - centers[:-1], axis=1)
+
+    # Calculate relative velocities (displacement / average diagonal)
+    avg_diagonals = (diagonals[1:] + diagonals[:-1]) / 2
+    relative_velocities = np.zeros(T - 1)
+    valid_diag_mask = avg_diagonals > 0
+    relative_velocities[valid_diag_mask] = displacements[valid_diag_mask] / avg_diagonals[valid_diag_mask]
+
+    # Mark frames with excessive relative velocity as invalid
+    valid = np.ones(T, dtype=bool)
+    valid[1:] = relative_velocities < max_relative_velocity
+
+    return valid
+
+
+def interpolate_bboxes(bboxes, max_size_change_ratio=2.5):
+    """
+    Interpolate missing bboxes with size consistency validation.
+
+    Args:
+        bboxes: (T, 5) array of [x1, y1, x2, y2, conf]
+        max_size_change_ratio: Maximum allowed size change between adjacent frames
+    """
+    T = bboxes.shape[0]
+
+    # First pass: filter out bboxes with abnormal size changes
+    non_zero_mask = np.any(bboxes != 0, axis=1)
+    non_zero_indices = np.where(non_zero_mask)[0]
+
+    if len(non_zero_indices) > 1:
+        # Calculate bbox areas
+        widths = bboxes[:, 2] - bboxes[:, 0]
+        heights = bboxes[:, 3] - bboxes[:, 1]
+        areas = widths * heights
+
+        # Check size changes between consecutive valid detections
+        for i in range(len(non_zero_indices) - 1):
+            curr_idx = non_zero_indices[i]
+            next_idx = non_zero_indices[i + 1]
+
+            curr_area = areas[curr_idx]
+            next_area = areas[next_idx]
+
+            if curr_area > 0 and next_area > 0:
+                size_ratio = max(curr_area, next_area) / min(curr_area, next_area)
+
+                # If size change is too large, mark the detection with lower confidence as invalid
+                if size_ratio > max_size_change_ratio:
+                    # Keep the one with higher confidence, or the earlier one if confidence is same
+                    if bboxes[curr_idx, 4] < bboxes[next_idx, 4]:
+                        bboxes[curr_idx] = 0
+                        non_zero_mask[curr_idx] = False
+                    else:
+                        bboxes[next_idx] = 0
+                        non_zero_mask[next_idx] = False
+
+        # Update non_zero_indices after filtering
+        non_zero_indices = np.where(non_zero_mask)[0]
+
+    zero_indices = np.where(~non_zero_mask)[0]
+
+    if len(zero_indices) == 0 or len(non_zero_indices) == 0:
         return bboxes
 
     interpolated_bboxes = bboxes.copy()
-    for i in range(5):  
+    for i in range(5):
         interp_func = interp1d(non_zero_indices, bboxes[non_zero_indices, i], kind='linear', fill_value="extrapolate")
         interpolated_bboxes[zero_indices, i] = interp_func(zero_indices)
-    
+
     return interpolated_bboxes
