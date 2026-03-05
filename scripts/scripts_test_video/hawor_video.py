@@ -98,9 +98,12 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     
     tid = np.array([tr for tr in tracks])
 
-    if os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'):
+    # Check if both output files exist before skipping
+    frame_chunks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'
+    model_masks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy'
+    if os.path.exists(frame_chunks_file) and os.path.exists(model_masks_file):
         vprint("skip hawor motion estimation")
-        frame_chunks_all = joblib.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
+        frame_chunks_all = joblib.load(frame_chunks_file)
         return frame_chunks_all, img_focal
 
     vprint(f'Running hawor on {os.path.basename(video_path)} ...')
