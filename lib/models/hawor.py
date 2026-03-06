@@ -95,10 +95,14 @@ class HAWOR(pl.LightningModule):
 
         
         # default open torch compile
-        if cfg.MODEL.BACKBONE.get('TORCH_COMPILE', 0): 
+        if cfg.MODEL.BACKBONE.get('TORCH_COMPILE', 0):
             log.info("Model will use torch.compile")
             self.backbone = torch.compile(self.backbone)
             self.mano_head = torch.compile(self.mano_head)
+            if self.st_module is not None:
+                self.st_module = torch.compile(self.st_module)
+            if self.motion_module is not None:
+                self.motion_module = torch.compile(self.motion_module)
 
         # Define loss functions
         # self.keypoint_3d_loss = Keypoint3DLoss(loss_type='l1')
@@ -376,7 +380,7 @@ class HAWOR(pl.LightningModule):
 
         return output
 
-    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=4):
+    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64):
         db = TrackDatasetEval(frame_source, frame_indices, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
 
@@ -436,18 +440,18 @@ class HAWOR(pl.LightningModule):
             expected = current_chunks * seq_len
             out = {k: v[:expected] for k, v in out.items()}
 
-            pred_cam.append(out['pred_cam'].cpu())
-            pred_pose.append(out['pred_pose'].cpu())
-            pred_shape.append(out['pred_shape'].cpu())
-            pred_rotmat.append(out['pred_rotmat'].cpu())
-            pred_trans.append(out['trans_full'].cpu())
+            pred_cam.append(out['pred_cam'])
+            pred_pose.append(out['pred_pose'])
+            pred_shape.append(out['pred_shape'])
+            pred_rotmat.append(out['pred_rotmat'])
+            pred_trans.append(out['trans_full'])
 
-        # Trim padded frames
-        pred_cam = torch.cat(pred_cam)[:total_frames]
-        pred_pose = torch.cat(pred_pose)[:total_frames]
-        pred_shape = torch.cat(pred_shape)[:total_frames]
-        pred_rotmat = torch.cat(pred_rotmat)[:total_frames]
-        pred_trans = torch.cat(pred_trans)[:total_frames]
+        # Concatenate on GPU, then transfer to CPU once
+        pred_cam = torch.cat(pred_cam, dim=0)[:total_frames].cpu()
+        pred_pose = torch.cat(pred_pose, dim=0)[:total_frames].cpu()
+        pred_shape = torch.cat(pred_shape, dim=0)[:total_frames].cpu()
+        pred_rotmat = torch.cat(pred_rotmat, dim=0)[:total_frames].cpu()
+        pred_trans = torch.cat(pred_trans, dim=0)[:total_frames].cpu()
 
         results = {
             'pred_cam': pred_cam,
