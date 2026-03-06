@@ -39,6 +39,12 @@ def detect_track_video(args, detector_runner=None, force=False, detect_batch_siz
     if (not force) and os.path.exists(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy'):
         vprint(f"skip track for {start_idx}_{end_idx}")
         return start_idx, end_idx, seq_folder, frame_source
+
+    # Invalidate track range cache since we're (re)running detect_track
+    cache_file = f'{seq_folder}/.track_range'
+    if os.path.exists(cache_file):
+        os.remove(cache_file)
+
     os.makedirs(f"{seq_folder}/tracks_{start_idx}_{end_idx}", exist_ok=True)
     # Increased threshold from 0.2 to 0.35 to reduce false positives
     # Especially important when hands leave frame or camera moves rapidly

@@ -344,6 +344,17 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns):
         )
     else:
         start_idx, end_idx = get_track_range(seq_folder)
+        # Verify the tracks directory actually exists
+        tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+        if not tracks_dir.exists():
+            # Cache was stale, invalidate and retry
+            cache_file = seq_folder / ".track_range"
+            if cache_file.exists():
+                cache_file.unlink()
+            start_idx, end_idx = get_track_range(seq_folder, fast=False)
+            tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+            if not tracks_dir.exists():
+                raise FileNotFoundError(f"Tracks directory not found: {tracks_dir}")
 
     if ns.stage == "motion":
         run_motion_for_video(
@@ -467,6 +478,17 @@ def run_stage(ns):
         start_idx, end_idx, _, _ = detect_track_video(stage_args, detect_batch_size=ns.detect_batch_size)
     else:
         start_idx, end_idx = get_track_range(seq_folder)
+        # Verify the tracks directory actually exists
+        tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+        if not tracks_dir.exists():
+            # Cache was stale, invalidate and retry
+            cache_file = seq_folder / ".track_range"
+            if cache_file.exists():
+                cache_file.unlink()
+            start_idx, end_idx = get_track_range(seq_folder, fast=False)
+            tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+            if not tracks_dir.exists():
+                raise FileNotFoundError(f"Tracks directory not found: {tracks_dir}")
 
     if ns.stage == "motion":
         hawor_motion_estimation(stage_args, start_idx, end_idx, str(seq_folder))

@@ -344,18 +344,22 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     t0 = time.time()
     model_masks = model_masks > 0 # bool
 
+    # Ensure output directory exists
+    output_dir = f'{seq_folder}/tracks_{start_idx}_{end_idx}'
+    os.makedirs(output_dir, exist_ok=True)
+
     # Save with error handling
     try:
-        vprint(f"Saving model_masks.npy to {seq_folder}/tracks_{start_idx}_{end_idx}/")
-        np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', model_masks)
+        vprint(f"Saving model_masks.npy to {output_dir}/")
+        np.save(f'{output_dir}/model_masks.npy', model_masks)
         vprint(f"✓ Saved model_masks.npy ({model_masks.shape}, {model_masks.dtype})")
     except Exception as e:
         print(f"ERROR: Failed to save model_masks.npy: {e}", file=sys.stderr)
         raise
 
     try:
-        vprint(f"Saving frame_chunks_all.npy to {seq_folder}/tracks_{start_idx}_{end_idx}/")
-        joblib.dump(frame_chunks_all, f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
+        vprint(f"Saving frame_chunks_all.npy to {output_dir}/")
+        joblib.dump(frame_chunks_all, f'{output_dir}/frame_chunks_all.npy')
         vprint(f"✓ Saved frame_chunks_all.npy")
     except Exception as e:
         print(f"ERROR: Failed to save frame_chunks_all.npy: {e}", file=sys.stderr)
