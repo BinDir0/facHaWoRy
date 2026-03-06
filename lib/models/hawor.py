@@ -164,6 +164,7 @@ class HAWOR(pl.LightningModule):
 
         # backbone
         feature = self.backbone(image[:,:,:,32:-32])
+        feature = feature.float()
 
         # space-time module
         if self.st_module is not None:
@@ -427,7 +428,7 @@ class HAWOR(pl.LightningModule):
                 if type(v0) == torch.Tensor:
                     batch[k] = torch.stack([cb[k] for cb in chunk_batches], dim=0).to(device)
 
-            with torch.no_grad(), torch.cuda.amp.autocast():
+            with torch.no_grad():
                 output = self.forward(batch)
                 out = output['out']
 

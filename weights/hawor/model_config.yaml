@@ -112,7 +112,7 @@ MODEL:
   - 0.225
   BACKBONE:
     TYPE: vit
-    TORCH_COMPILE: 1
+    TORCH_COMPILE: 0
     PRETRAINED_WEIGHTS: 
   MANO_HEAD:
     TYPE: transformer_decoder
