@@ -76,6 +76,7 @@ class BatchScheduler:
         img_focal: Optional[float],
         chunk_batch_size: int,
         metric3d_batch_size: int,
+        render_batch_size: int,
         detect_batch_size: int,
         detect_video_batch_size: int,
         frame_backend: str,
@@ -94,6 +95,7 @@ class BatchScheduler:
         self.img_focal = img_focal
         self.chunk_batch_size = chunk_batch_size
         self.metric3d_batch_size = metric3d_batch_size
+        self.render_batch_size = render_batch_size
         self.detect_batch_size = detect_batch_size
         self.detect_video_batch_size = detect_video_batch_size
         self.frame_backend = frame_backend
@@ -163,6 +165,7 @@ class BatchScheduler:
             cmd.extend(["--img_focal", str(self.img_focal)])
         cmd.extend(["--chunk_batch_size", str(self.chunk_batch_size)])
         cmd.extend(["--metric3d_batch_size", str(self.metric3d_batch_size)])
+        cmd.extend(["--render_batch_size", str(self.render_batch_size)])
         cmd.extend(["--detect_batch_size", str(self.detect_batch_size)])
         cmd.extend(["--frame_backend", self.frame_backend])
         if self.resume:
@@ -204,6 +207,7 @@ class BatchScheduler:
             "--checkpoint", self.checkpoint,
             "--infiller_weight", self.infiller_weight,
             "--chunk_batch_size", str(self.chunk_batch_size),
+            "--render_batch_size", str(self.render_batch_size),
             "--frame_backend", self.frame_backend,
         ]
         if self.img_focal is not None:
@@ -908,6 +912,12 @@ def get_parser():
         default=8,
         help="Batch size for Metric3D depth estimation in SLAM stage",
     )
+    parser.add_argument(
+        "--render_batch_size",
+        type=int,
+        default=8,
+        help="Batch size for rendering phase in motion stage (Phase 3). Higher = faster but more GPU memory. Default: 8",
+    )
     # CRITICAL: detect_batch_size MUST be 1 for tracking to work correctly.
     # Tracking is stateful and sequential - each frame depends on previous frame's
     # Kalman filter state. Batching multiple frames breaks this dependency and
@@ -1053,6 +1063,7 @@ def main():
         img_focal=args.img_focal,
         chunk_batch_size=args.chunk_batch_size,
         metric3d_batch_size=args.metric3d_batch_size,
+        render_batch_size=args.render_batch_size,
         detect_batch_size=args.detect_batch_size,
         detect_video_batch_size=args.detect_video_batch_size,
         frame_backend=args.frame_backend,

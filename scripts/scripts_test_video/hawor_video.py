@@ -358,8 +358,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             frame_indices = np.array(frame_ck, dtype=np.int64)
 
             # Batch rendering with smaller batch size to avoid PyTorch3D bin overflow
-            # Render 4 frames at a time instead of all frames or single frame
-            render_batch_size = 4
+            # Render multiple frames at a time instead of all frames or single frame
+            render_batch_size = getattr(args, 'render_batch_size', 8)
             num_frames = len(frame_indices)
 
             # Setup once per chunk (outside loop)
@@ -377,17 +377,35 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 batch_end = min(batch_start + render_batch_size, num_frames)
                 batch_vertices = vertices[batch_start:batch_end]  # (B, N, 3)
 
-                rend, masks = renderer.render_multiple(
-                    batch_vertices.unsqueeze(0).cuda(),  # (1, B, N, 3)
-                    faces,
-                    verts_color.unsqueeze(0).cuda(),
-                    cameras,
-                    lights
-                )
+                try:
+                    rend, masks = renderer.render_multiple(
+                        batch_vertices.unsqueeze(0).cuda(),  # (1, B, N, 3)
+                        faces,
+                        verts_color.unsqueeze(0).cuda(),
+                        cameras,
+                        lights
+                    )
 
-                # Assign masks for this batch
-                for i, img_i in enumerate(range(batch_start, batch_end)):
-                    model_masks[frame_ck[img_i]] += masks[i]
+                    # Assign masks for this batch
+                    for i, img_i in enumerate(range(batch_start, batch_end)):
+                        model_masks[frame_ck[img_i]] += masks[i]
+
+                except RuntimeError as e:
+                    if "bin_size" in str(e) or "overflow" in str(e).lower():
+                        # PyTorch3D bin overflow - fall back to single-frame rendering
+                        vprint(f"Warning: PyTorch3D bin overflow with batch_size={batch_end-batch_start}, falling back to single-frame rendering")
+                        for i in range(batch_start, batch_end):
+                            single_vert = vertices[i:i+1]
+                            rend, masks = renderer.render_multiple(
+                                single_vert.unsqueeze(0).cuda(),
+                                faces,
+                                verts_color.unsqueeze(0).cuda(),
+                                cameras,
+                                lights
+                            )
+                            model_masks[frame_ck[i]] += masks[0]
+                    else:
+                        raise
 
             timing_render += time.time() - t_rend
         timing_postprocess += time.time() - t_post
