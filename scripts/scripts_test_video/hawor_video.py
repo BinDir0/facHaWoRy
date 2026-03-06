@@ -352,9 +352,9 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     try:
         vprint(f"Saving model_masks.npy to {model_masks_file}")
         np.save(model_masks_file, model_masks)
-        # Force flush to disk
-        import os
-        os.sync() if hasattr(os, 'sync') else None
+        # Force flush to disk (if available)
+        if hasattr(os, 'sync'):
+            os.sync()
         # Verify file was actually written
         if not os.path.exists(model_masks_file):
             raise IOError(f"File not found after save: {model_masks_file}")
