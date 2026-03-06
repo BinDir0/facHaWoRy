@@ -2,6 +2,7 @@ from collections import defaultdict
 
 import json
 import os
+import sys
 import joblib
 import numpy as np
 import torch
@@ -342,8 +343,24 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     t0 = time.time()
     model_masks = model_masks > 0 # bool
-    np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', model_masks)
-    joblib.dump(frame_chunks_all, f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
+
+    # Save with error handling
+    try:
+        vprint(f"Saving model_masks.npy to {seq_folder}/tracks_{start_idx}_{end_idx}/")
+        np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', model_masks)
+        vprint(f"✓ Saved model_masks.npy ({model_masks.shape}, {model_masks.dtype})")
+    except Exception as e:
+        print(f"ERROR: Failed to save model_masks.npy: {e}", file=sys.stderr)
+        raise
+
+    try:
+        vprint(f"Saving frame_chunks_all.npy to {seq_folder}/tracks_{start_idx}_{end_idx}/")
+        joblib.dump(frame_chunks_all, f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy')
+        vprint(f"✓ Saved frame_chunks_all.npy")
+    except Exception as e:
+        print(f"ERROR: Failed to save frame_chunks_all.npy: {e}", file=sys.stderr)
+        raise
+
     timing['4_save_results'] = time.time() - t0
 
     timing['total'] = time.time() - t_start_total
@@ -359,6 +376,16 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
         print(f"  {key:25s}: {timing[key]:6.2f}s ({pct:5.1f}%)")
     print(f"  {'total':25s}: {timing['total']:6.2f}s")
     print(f"{'='*60}\n")
+
+    # Verify outputs were saved successfully
+    if not os.path.exists(model_masks_file):
+        raise RuntimeError(f"Failed to save model_masks.npy: {model_masks_file}")
+    if not os.path.exists(frame_chunks_file):
+        raise RuntimeError(f"Failed to save frame_chunks_all.npy: {frame_chunks_file}")
+
+    print(f"✓ Motion stage completed successfully for {os.path.basename(video_path)}")
+    print(f"  - Saved: {model_masks_file}")
+    print(f"  - Saved: {frame_chunks_file}\n")
 
     return frame_chunks_all, img_focal
 
