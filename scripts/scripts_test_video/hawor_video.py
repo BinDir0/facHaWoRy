@@ -86,7 +86,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     model = motion_runner['model']
 
     # Create MANO models once for reuse (avoid recreation overhead)
-    from hawor.utils.smplx import MANO
+    from lib.models.mano_wrapper import MANO
     device = motion_runner['device']
 
     # Right hand MANO model
