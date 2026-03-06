@@ -85,6 +85,33 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     motion_runner = motion_runner or build_motion_runner(args.checkpoint)
     model = motion_runner['model']
 
+    # Create MANO models once for reuse (avoid recreation overhead)
+    from hawor.utils.smplx import MANO
+    device = motion_runner['device']
+
+    # Right hand MANO model
+    MANO_cfg_right = {
+        'data_dir': '_DATA/data/',
+        'model_path': '_DATA/data/mano',
+        'gender': 'neutral',
+        'num_hand_joints': 15,
+        'create_body_pose': False
+    }
+    mano_right = MANO(**MANO_cfg_right).to(device)
+
+    # Left hand MANO model
+    MANO_cfg_left = {
+        'data_dir': '_DATA/data_left/',
+        'model_path': '_DATA/data_left/mano_left',
+        'gender': 'neutral',
+        'num_hand_joints': 15,
+        'create_body_pose': False,
+        'is_rhand': False
+    }
+    mano_left = MANO(**MANO_cfg_left).to(device)
+    # Fix MANO shapedirs of the left hand bug
+    mano_left.shapedirs[:, 0, :] *= -1
+
     video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
     frame_source, _ = build_frame_source(video_path, backend=frame_backend)
@@ -314,9 +341,9 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             data_out["init_root_orient"] = rotation_matrix_to_angle_axis(data_out["init_root_orient"])
             data_out["init_hand_pose"] = rotation_matrix_to_angle_axis(data_out["init_hand_pose"])
             if do_flip: # left
-                outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
+                outputs = run_mano_left(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"], mano_model=mano_left)
             else: # right
-                outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"])
+                outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"], mano_model=mano_right)
 
             vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
             frame_indices = np.array(frame_ck, dtype=np.int64)

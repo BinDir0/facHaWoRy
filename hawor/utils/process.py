@@ -26,7 +26,7 @@ def get_mano_faces():
     return mano.faces
 
 
-def run_mano(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=True):
+def run_mano(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=True, mano_model=None):
     """
     Forward pass of the SMPL model and populates pred_data accordingly with
     joints3d, verts3d, points3d.
@@ -35,19 +35,26 @@ def run_mano(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=
     root_orient : B x T x 3
     body_pose : B x T x J*3
     betas : (optional) B x D
+    mano_model : (optional) Pre-created MANO model to reuse
     """
     block_print()
-    MANO_cfg = {
-        'DATA_DIR': '_DATA/data/',
-        'MODEL_PATH': '_DATA/data/mano',
-        'GENDER': 'neutral',
-        'NUM_HAND_JOINTS': 15,
-        'CREATE_BODY_POSE': False
-    }
-    mano_cfg = {k.lower(): v for k,v in MANO_cfg.items()}
-    mano = MANO(**mano_cfg)
-    if use_cuda:
-        mano = mano.cuda()
+
+    if mano_model is None:
+        # Create new model if not provided (backward compatibility)
+        MANO_cfg = {
+            'DATA_DIR': '_DATA/data/',
+            'MODEL_PATH': '_DATA/data/mano',
+            'GENDER': 'neutral',
+            'NUM_HAND_JOINTS': 15,
+            'CREATE_BODY_POSE': False
+        }
+        mano_cfg = {k.lower(): v for k,v in MANO_cfg.items()}
+        mano = MANO(**mano_cfg)
+        if use_cuda:
+            mano = mano.cuda()
+    else:
+        # Reuse provided model
+        mano = mano_model
 
     B, T, _ = root_orient.shape
     NUM_JOINTS = 15
@@ -104,7 +111,7 @@ def run_mano(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=
     enable_print()
     return outputs
 
-def run_mano_left(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=True, fix_shapedirs=True):
+def run_mano_left(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=True, fix_shapedirs=True, mano_model=None):
     """
     Forward pass of the SMPL model and populates pred_data accordingly with
     joints3d, verts3d, points3d.
@@ -113,24 +120,31 @@ def run_mano_left(trans, root_orient, hand_pose, is_right=None, betas=None, use_
     root_orient : B x T x 3
     body_pose : B x T x J*3
     betas : (optional) B x D
+    mano_model : (optional) Pre-created MANO model to reuse
     """
     block_print()
-    MANO_cfg = {
-        'DATA_DIR': '_DATA/data_left/',
-        'MODEL_PATH': '_DATA/data_left/mano_left',
-        'GENDER': 'neutral',
-        'NUM_HAND_JOINTS': 15,
-        'CREATE_BODY_POSE': False,
-        'is_rhand': False
-    }
-    mano_cfg = {k.lower(): v for k,v in MANO_cfg.items()}
-    mano = MANO(**mano_cfg)
-    if use_cuda:
-        mano = mano.cuda()
-    
-    # fix MANO shapedirs of the left hand bug (https://github.com/vchoutas/smplx/issues/48)
-    if fix_shapedirs:
-        mano.shapedirs[:, 0, :] *= -1
+
+    if mano_model is None:
+        # Create new model if not provided (backward compatibility)
+        MANO_cfg = {
+            'DATA_DIR': '_DATA/data_left/',
+            'MODEL_PATH': '_DATA/data_left/mano_left',
+            'GENDER': 'neutral',
+            'NUM_HAND_JOINTS': 15,
+            'CREATE_BODY_POSE': False,
+            'is_rhand': False
+        }
+        mano_cfg = {k.lower(): v for k,v in MANO_cfg.items()}
+        mano = MANO(**mano_cfg)
+        if use_cuda:
+            mano = mano.cuda()
+
+        # fix MANO shapedirs of the left hand bug (https://github.com/vchoutas/smplx/issues/48)
+        if fix_shapedirs:
+            mano.shapedirs[:, 0, :] *= -1
+    else:
+        # Reuse provided model
+        mano = mano_model
 
     B, T, _ = root_orient.shape
     NUM_JOINTS = 15

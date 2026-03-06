@@ -101,6 +101,19 @@ def get_track_range(seq_folder: Path, fast=False):
             end_idx = int(parts[2])
         except ValueError:
             continue
+
+        # Check if directory is empty (from previous failures)
+        # Empty tracks directories should be cleaned up
+        if p.is_dir():
+            contents = list(p.iterdir())
+            if len(contents) == 0:
+                # Empty directory - remove it
+                try:
+                    p.rmdir()
+                    continue  # Skip this directory
+                except:
+                    pass  # If removal fails, keep it in the list
+
         track_dirs.append((start_idx, end_idx, p))
 
     if not track_dirs:
