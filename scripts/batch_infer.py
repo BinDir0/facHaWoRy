@@ -256,12 +256,13 @@ class BatchScheduler:
             return False
 
     def get_stage_pending_videos(self, stage: str) -> List[str]:
-        pending = []
+        # First filter by status.json
+        candidates = []
         for vp in self.video_paths:
             task = self.tasks[vp]
             if stage == self.stages[0]:
                 if task.stage_status.get(stage) in ("pending", "failed"):
-                    pending.append(vp)
+                    candidates.append(vp)
                 continue
 
             stage_idx = self.stages.index(stage)
@@ -269,7 +270,20 @@ class BatchScheduler:
             if task.stage_status.get(prev_stage) != "completed":
                 continue
             if task.stage_status.get(stage) in ("pending", "failed"):
-                pending.append(vp)
+                candidates.append(vp)
+
+        # Then filter by .done markers (fast disk check)
+        # This avoids queueing videos that are already complete
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from batch_worker import get_seq_folder
+
+        pending = []
+        for video in candidates:
+            seq_folder = get_seq_folder(video)
+            done_marker = seq_folder / f".{stage}.done"
+            if not done_marker.exists():
+                pending.append(video)
+
         return pending
 
     def run_stage_wave_dynamic(self, stage: str, pbar=None) -> Dict[str, bool]:
@@ -441,12 +455,14 @@ class BatchScheduler:
             if not videos_to_process:
                 continue
 
-            # Build frame sources
+            # Build frame sources and cache frame counts
             video_sources = []
+            frame_counts = {}  # Cache frame counts to avoid rebuilding frame sources
             for idx, vp in enumerate(videos_to_process):
                 try:
                     fs, _ = build_frame_source(vp, backend=self.frame_backend)
                     video_sources.append((idx, fs))
+                    frame_counts[idx] = len(fs)  # Cache frame count
                 except Exception as e:
                     print(f"Error building frame source for {vp}: {e}")
                     result_queue.put({"video": vp, "success": False, "gpu": gpu})
@@ -472,10 +488,13 @@ class BatchScheduler:
                         boxes, tracks = results[idx]
                         seq_folder = get_seq_folder(vp)
 
-                        # Get frame range
-                        fs, _ = build_frame_source(vp, backend=self.frame_backend)
+                        # Get frame range from cache (avoid rebuilding frame source)
                         start_idx = 0
-                        end_idx = len(fs)
+                        end_idx = frame_counts.get(idx, 0)
+                        if end_idx == 0:
+                            # Fallback if not in cache
+                            fs, _ = build_frame_source(vp, backend=self.frame_backend)
+                            end_idx = len(fs)
 
                         # Save outputs
                         output_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
