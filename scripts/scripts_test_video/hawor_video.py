@@ -81,6 +81,29 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     timing = {}
     t_start_total = time.time()
 
+    # Early skip check - before any expensive operations
+    frame_chunks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'
+    model_masks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy'
+
+    # Auto-fix incomplete outputs: if frame_chunks exists but model_masks doesn't, remove frame_chunks
+    if os.path.exists(frame_chunks_file) and not os.path.exists(model_masks_file):
+        vprint(f"Warning: Incomplete output detected. Removing {frame_chunks_file} to force re-run")
+        os.remove(frame_chunks_file)
+
+    if os.path.exists(frame_chunks_file) and os.path.exists(model_masks_file):
+        vprint("skip hawor motion estimation")
+        # Need to load img_focal for return value
+        img_focal = args.img_focal
+        if img_focal is None:
+            try:
+                with open(os.path.join(seq_folder, 'est_focal.txt'), 'r') as f:
+                    img_focal = float(f.read())
+            except:
+                img_focal = 600
+        frame_chunks_all = joblib.load(frame_chunks_file)
+        return frame_chunks_all, img_focal
+
+    # If not skipping, proceed with full initialization
     t0 = time.time()
     motion_runner = motion_runner or build_motion_runner(args.checkpoint)
     model = motion_runner['model']
@@ -129,22 +152,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             vprint(f'No focal length provided, use default {img_focal}')
             with open(os.path.join(seq_folder, 'est_focal.txt'), 'w') as f:
                 f.write(str(img_focal))
-    
+
     tid = np.array([tr for tr in tracks])
-
-    # Check if both output files exist before skipping
-    frame_chunks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/frame_chunks_all.npy'
-    model_masks_file = f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy'
-
-    # Auto-fix incomplete outputs: if frame_chunks exists but model_masks doesn't, remove frame_chunks
-    if os.path.exists(frame_chunks_file) and not os.path.exists(model_masks_file):
-        vprint(f"Warning: Incomplete output detected. Removing {frame_chunks_file} to force re-run")
-        os.remove(frame_chunks_file)
-
-    if os.path.exists(frame_chunks_file) and os.path.exists(model_masks_file):
-        vprint("skip hawor motion estimation")
-        frame_chunks_all = joblib.load(frame_chunks_file)
-        return frame_chunks_all, img_focal
 
     vprint(f'Running hawor on {os.path.basename(video_path)} ...')
 
