@@ -356,19 +356,29 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
             vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
             frame_indices = np.array(frame_ck, dtype=np.int64)
-            for img_i in range(len(frame_indices)):
-                if do_flip:
-                    faces = torch.from_numpy(faces_left).cuda()
-                else:
-                    faces = torch.from_numpy(faces_right).cuda()
-                cam_R = torch.eye(3).unsqueeze(0).cuda()
-                cam_T = torch.zeros(1, 3).cuda()
-                cameras, lights = renderer.create_camera_from_cv(cam_R, cam_T)
-                verts_color = torch.tensor([0, 0, 255, 255]) / 255
-                vertices_i = vertices[[img_i]]
-                rend, mask = renderer.render_multiple(vertices_i.unsqueeze(0).cuda(), faces, verts_color.unsqueeze(0).cuda(), cameras, lights)
 
-                model_masks[frame_ck[img_i]] += mask
+            # Batch rendering optimization: setup once per chunk (outside loop)
+            if do_flip:
+                faces = torch.from_numpy(faces_left).cuda()
+            else:
+                faces = torch.from_numpy(faces_right).cuda()
+            cam_R = torch.eye(3).unsqueeze(0).cuda()
+            cam_T = torch.zeros(1, 3).cuda()
+            cameras, lights = renderer.create_camera_from_cv(cam_R, cam_T)
+            verts_color = torch.tensor([0, 0, 255, 255]) / 255
+
+            # Batch render all frames in chunk at once
+            rend, masks = renderer.render_multiple(
+                vertices.unsqueeze(0).cuda(),  # (1, T, N, 3) - all frames at once
+                faces,
+                verts_color.unsqueeze(0).cuda(),
+                cameras,
+                lights
+            )
+
+            # Assign masks (fast loop, no GPU calls)
+            for img_i in range(len(frame_indices)):
+                model_masks[frame_ck[img_i]] += masks[img_i]
             timing_render += time.time() - t_rend
         timing_postprocess += time.time() - t_post
 
