@@ -348,21 +348,40 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     output_dir = f'{seq_folder}/tracks_{start_idx}_{end_idx}'
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save with error handling
+    # Save with error handling and verification
     try:
-        vprint(f"Saving model_masks.npy to {output_dir}/")
-        np.save(f'{output_dir}/model_masks.npy', model_masks)
-        vprint(f"✓ Saved model_masks.npy ({model_masks.shape}, {model_masks.dtype})")
+        vprint(f"Saving model_masks.npy to {model_masks_file}")
+        np.save(model_masks_file, model_masks)
+        # Force flush to disk
+        import os
+        os.sync() if hasattr(os, 'sync') else None
+        # Verify file was actually written
+        if not os.path.exists(model_masks_file):
+            raise IOError(f"File not found after save: {model_masks_file}")
+        file_size = os.path.getsize(model_masks_file)
+        if file_size == 0:
+            raise IOError(f"File is empty after save: {model_masks_file}")
+        vprint(f"✓ Saved model_masks.npy ({model_masks.shape}, {model_masks.dtype}, {file_size} bytes)")
     except Exception as e:
         print(f"ERROR: Failed to save model_masks.npy: {e}", file=sys.stderr)
+        print(f"  Path: {model_masks_file}", file=sys.stderr)
+        print(f"  Directory exists: {os.path.exists(output_dir)}", file=sys.stderr)
+        print(f"  Directory writable: {os.access(output_dir, os.W_OK)}", file=sys.stderr)
         raise
 
     try:
-        vprint(f"Saving frame_chunks_all.npy to {output_dir}/")
-        joblib.dump(frame_chunks_all, f'{output_dir}/frame_chunks_all.npy')
-        vprint(f"✓ Saved frame_chunks_all.npy")
+        vprint(f"Saving frame_chunks_all.npy to {frame_chunks_file}")
+        joblib.dump(frame_chunks_all, frame_chunks_file)
+        # Verify file was actually written
+        if not os.path.exists(frame_chunks_file):
+            raise IOError(f"File not found after save: {frame_chunks_file}")
+        file_size = os.path.getsize(frame_chunks_file)
+        if file_size == 0:
+            raise IOError(f"File is empty after save: {frame_chunks_file}")
+        vprint(f"✓ Saved frame_chunks_all.npy ({file_size} bytes)")
     except Exception as e:
         print(f"ERROR: Failed to save frame_chunks_all.npy: {e}", file=sys.stderr)
+        print(f"  Path: {frame_chunks_file}", file=sys.stderr)
         raise
 
     timing['4_save_results'] = time.time() - t0
@@ -381,15 +400,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     print(f"  {'total':25s}: {timing['total']:6.2f}s")
     print(f"{'='*60}\n")
 
-    # Verify outputs were saved successfully
-    if not os.path.exists(model_masks_file):
-        raise RuntimeError(f"Failed to save model_masks.npy: {model_masks_file}")
-    if not os.path.exists(frame_chunks_file):
-        raise RuntimeError(f"Failed to save frame_chunks_all.npy: {frame_chunks_file}")
-
     print(f"✓ Motion stage completed successfully for {os.path.basename(video_path)}")
-    print(f"  - Saved: {model_masks_file}")
-    print(f"  - Saved: {frame_chunks_file}\n")
 
     return frame_chunks_all, img_focal
 
