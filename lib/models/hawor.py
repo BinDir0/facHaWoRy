@@ -96,13 +96,13 @@ class HAWOR(pl.LightningModule):
         
         # default open torch compile
         if cfg.MODEL.BACKBONE.get('TORCH_COMPILE', 0):
-            log.info("Model will use torch.compile")
-            self.backbone = torch.compile(self.backbone)
-            self.mano_head = torch.compile(self.mano_head)
+            log.info("Model will use torch.compile with dynamic shapes")
+            self.backbone = torch.compile(self.backbone, dynamic=True)
+            self.mano_head = torch.compile(self.mano_head, dynamic=True)
             if self.st_module is not None:
-                self.st_module = torch.compile(self.st_module)
+                self.st_module = torch.compile(self.st_module, dynamic=True)
             if self.motion_module is not None:
-                self.motion_module = torch.compile(self.motion_module)
+                self.motion_module = torch.compile(self.motion_module, dynamic=True)
 
         # Define loss functions
         # self.keypoint_3d_loss = Keypoint3DLoss(loss_type='l1')
