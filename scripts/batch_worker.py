@@ -371,6 +371,11 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns):
         raise ValueError(f"Unknown stage: {ns.stage}")
 
     validate_stage_output(ns.stage, seq_folder, start_idx, end_idx)
+
+    # Create .done marker after successful validation
+    done_marker = seq_folder / f".{ns.stage}.done"
+    done_marker.touch()
+
     return {
         "status": "success",
         "start_idx": start_idx,
@@ -477,6 +482,11 @@ def run_stage(ns):
         raise ValueError(f"Unknown stage: {ns.stage}")
 
     validate_stage_output(ns.stage, seq_folder, start_idx, end_idx)
+
+    # Create .done marker after successful validation
+    done_marker = seq_folder / f".{ns.stage}.done"
+    done_marker.touch()
+
     return {
         "status": "success",
         "start_idx": start_idx,
