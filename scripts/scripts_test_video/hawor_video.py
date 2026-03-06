@@ -357,7 +357,12 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
             frame_indices = np.array(frame_ck, dtype=np.int64)
 
-            # Batch rendering optimization: setup once per chunk (outside loop)
+            # Batch rendering with smaller batch size to avoid PyTorch3D bin overflow
+            # Render 4 frames at a time instead of all frames or single frame
+            render_batch_size = 4
+            num_frames = len(frame_indices)
+
+            # Setup once per chunk (outside loop)
             if do_flip:
                 faces = torch.from_numpy(faces_left).cuda()
             else:
@@ -367,18 +372,23 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             cameras, lights = renderer.create_camera_from_cv(cam_R, cam_T)
             verts_color = torch.tensor([0, 0, 255, 255]) / 255
 
-            # Batch render all frames in chunk at once
-            rend, masks = renderer.render_multiple(
-                vertices.unsqueeze(0).cuda(),  # (1, T, N, 3) - all frames at once
-                faces,
-                verts_color.unsqueeze(0).cuda(),
-                cameras,
-                lights
-            )
+            # Batch render in groups of render_batch_size frames
+            for batch_start in range(0, num_frames, render_batch_size):
+                batch_end = min(batch_start + render_batch_size, num_frames)
+                batch_vertices = vertices[batch_start:batch_end]  # (B, N, 3)
 
-            # Assign masks (fast loop, no GPU calls)
-            for img_i in range(len(frame_indices)):
-                model_masks[frame_ck[img_i]] += masks[img_i]
+                rend, masks = renderer.render_multiple(
+                    batch_vertices.unsqueeze(0).cuda(),  # (1, B, N, 3)
+                    faces,
+                    verts_color.unsqueeze(0).cuda(),
+                    cameras,
+                    lights
+                )
+
+                # Assign masks for this batch
+                for i, img_i in enumerate(range(batch_start, batch_end)):
+                    model_masks[frame_ck[img_i]] += masks[i]
+
             timing_render += time.time() - t_rend
         timing_postprocess += time.time() - t_post
 
