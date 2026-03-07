@@ -101,8 +101,8 @@ def extract_frames_decord(
             # Convert RGB to BGR for OpenCV
             frame_bgr = cv2.cvtColor(frames[i], cv2.COLOR_RGB2BGR)
 
-            # Save with zero-padded filename (e.g., frame_000000.jpg)
-            frame_filename = f"frame_{frame_idx:06d}{ext}"
+            # Save with zero-padded filename (e.g., 000000.jpg)
+            frame_filename = f"{frame_idx:06d}{ext}"
             frame_path = os.path.join(output_dir, frame_filename)
 
             success = cv2.imwrite(frame_path, frame_bgr, encode_params)
@@ -119,22 +119,23 @@ def extract_frames_decord(
 
 def process_video_worker(args_tuple):
     """Worker function for multiprocessing."""
-    video_path, base_output_dir, quality, format, verbose = args_tuple
+    video_path, quality, format, verbose = args_tuple
 
-    # Create output directory based on video name
-    video_name = Path(video_path).stem
-    output_dir = os.path.join(base_output_dir, video_name)
+    # Match official format: <video_dir>/<video_stem>/extracted_images/
+    video_dir = Path(video_path).parent
+    video_stem = Path(video_path).stem
+    output_dir = video_dir / video_stem / "extracted_images"
 
     # Skip if already extracted
     if os.path.exists(output_dir):
-        existing_frames = len([f for f in os.listdir(output_dir) if f.startswith("frame_")])
+        existing_frames = len([f for f in os.listdir(output_dir) if f.endswith(('.jpg', '.png'))])
         if existing_frames > 0:
             if verbose:
-                print(f"Skipping {video_name}: {existing_frames} frames already exist")
+                print(f"Skipping {video_stem}: {existing_frames} frames already exist")
             return video_path, existing_frames, True
 
     try:
-        num_frames = extract_frames_decord(video_path, output_dir, quality, format, verbose=False)
+        num_frames = extract_frames_decord(str(video_path), str(output_dir), quality, format, verbose=False)
         return video_path, num_frames, True
     except Exception as e:
         print(f"ERROR processing {video_path}: {e}", file=sys.stderr)
@@ -161,13 +162,7 @@ def main():
         help="Path to text file with one video path per line"
     )
 
-    # Output options
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="./extracted_frames",
-        help="Base directory for extracted frames (default: ./extracted_frames)"
-    )
+    # Output options (note: output directory is determined by video path)
     parser.add_argument(
         "--quality",
         type=int,
@@ -227,7 +222,7 @@ def main():
         sys.exit(1)
 
     print(f"Processing {len(valid_paths)} video(s)")
-    print(f"Output directory: {args.output_dir}")
+    print(f"Output format: <video_dir>/<video_stem>/extracted_images/")
     print(f"Quality: {args.quality}, Format: {args.format}")
     print(f"Workers: {args.num_workers}")
     print()
@@ -236,18 +231,20 @@ def main():
     if len(valid_paths) == 1 or args.num_workers == 1:
         # Single-threaded processing
         for video_path in valid_paths:
-            video_name = Path(video_path).stem
-            output_dir = os.path.join(args.output_dir, video_name)
+            # Match official format: <video_dir>/<video_stem>/extracted_images/
+            video_dir = Path(video_path).parent
+            video_stem = Path(video_path).stem
+            output_dir = video_dir / video_stem / "extracted_images"
 
             if args.skip_existing and os.path.exists(output_dir):
-                existing = len([f for f in os.listdir(output_dir) if f.startswith("frame_")])
+                existing = len([f for f in os.listdir(output_dir) if f.endswith(('.jpg', '.png'))])
                 if existing > 0:
-                    print(f"Skipping {video_name}: {existing} frames already exist")
+                    print(f"Skipping {video_stem}: {existing} frames already exist")
                     continue
 
             extract_frames_decord(
-                video_path,
-                output_dir,
+                str(video_path),
+                str(output_dir),
                 quality=args.quality,
                 format=args.format,
                 verbose=not args.quiet
@@ -255,7 +252,7 @@ def main():
     else:
         # Multi-threaded processing
         worker_args = [
-            (vp, args.output_dir, args.quality, args.format, not args.quiet)
+            (vp, args.quality, args.format, not args.quiet)
             for vp in valid_paths
         ]
 
