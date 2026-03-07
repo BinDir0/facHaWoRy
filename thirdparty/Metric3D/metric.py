@@ -204,20 +204,23 @@ class Metric3D:
         # Predict depth for the entire batch
         normalize_scale = self.cfg_.data_basic.depth_range[1]
 
-        # Process batch through model
-        pred_depths_batch = []
-        for i in range(len(rgb_images)):
-            pred_depth, _ = get_prediction(
-                model=self.model_,
-                input=batch_tensor[i:i+1],
-                cam_model=batch_cam_models[i],
-                pad_info=batch_pads[i],
-                scale_info=batch_scales[i],
-                gt_depth=None,
-                normalize_scale=normalize_scale,
-                ori_shape=batch_ori_shapes[i],
-            )
-            pred_depths_batch.append(pred_depth)
+        # Stack cam_models for batch processing
+        # batch_cam_models[i] is a list of 5 tensors (multi-scale)
+        # We need to stack each scale level across the batch
+        batch_cam_models_stacked = []
+        for scale_idx in range(len(batch_cam_models[0])):  # 5 scales
+            scale_tensors = [batch_cam_models[i][scale_idx] for i in range(len(rgb_images))]
+            batch_cam_models_stacked.append(torch.cat(scale_tensors, dim=0))
+
+        # Single batch inference call
+        data = dict(
+            input=batch_tensor,
+            cam_model=batch_cam_models_stacked,
+        )
+        pred_depth_batch, confidence_batch, output_dict = self.model_.module.inference(data)
+
+        # Split batch results
+        pred_depths_batch = [pred_depth_batch[i:i+1] for i in range(len(rgb_images))]
 
         # Post-process each depth map
         results = []
