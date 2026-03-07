@@ -140,6 +140,23 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     frame_source, _ = build_frame_source_auto(video_path, backend=frame_backend)
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
+
+    # Validate that tracks don't reference frames beyond available frames
+    num_frames = len(frame_source)
+    max_frame_in_tracks = max(
+        max(t['frame'] for t in track_data)
+        for track_data in tracks.values()
+        if len(track_data) > 0
+    )
+    if max_frame_in_tracks >= num_frames:
+        raise RuntimeError(
+            f"Track data references frame {max_frame_in_tracks} but only {num_frames} frames available. "
+            f"This usually means:\n"
+            f"1. detect_track stage used full video but motion stage uses extracted frames\n"
+            f"2. Extracted frames are incomplete (missing frames {num_frames}-{max_frame_in_tracks})\n"
+            f"Solution: Re-run detect_track stage with same frame source, or extract all frames."
+        )
+
     img_focal = args.img_focal
     timing['1_load_data'] = time.time() - t0
     if img_focal is None:

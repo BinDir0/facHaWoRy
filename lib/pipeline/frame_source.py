@@ -142,6 +142,14 @@ class ImageFolderFrameSource(BaseFrameSource):
         return len(self.image_paths)
 
     def get_frame(self, index: int, rgb: bool = False):
+        # Bounds check with helpful error message
+        if index < 0 or index >= len(self.image_paths):
+            raise IndexError(
+                f"Frame index {index} out of range [0, {len(self.image_paths)}). "
+                f"This usually means track data references frames that don't exist in extracted frames. "
+                f"Total frames available: {len(self.image_paths)}"
+            )
+
         path = self.image_paths[index]
 
         # Use turbojpeg for JPEG files if available (2-3x faster than cv2.imread)
