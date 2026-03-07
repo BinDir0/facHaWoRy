@@ -508,7 +508,25 @@ def run_stage(ns):
                 raise FileNotFoundError(f"Tracks directory not found: {tracks_dir}")
 
     if ns.stage == "motion":
-        hawor_motion_estimation(stage_args, start_idx, end_idx, str(seq_folder))
+        # Enable profiling if requested
+        if getattr(ns, 'enable_profiler', False):
+            from torch.profiler import profile, ProfilerActivity, schedule
+            profiler_output_dir = Path(ns.output_dir) / "profiler_traces"
+            profiler_output_dir.mkdir(parents=True, exist_ok=True)
+
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(wait=1, warmup=1, active=3, repeat=1),
+                on_trace_ready=lambda p: p.export_chrome_trace(
+                    str(profiler_output_dir / f"motion_trace_{Path(ns.video_path).stem}.json")
+                ),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+            ) as prof:
+                hawor_motion_estimation(stage_args, start_idx, end_idx, str(seq_folder), profiler=prof)
+        else:
+            hawor_motion_estimation(stage_args, start_idx, end_idx, str(seq_folder))
     elif ns.stage == "slam":
         hawor_slam(stage_args, start_idx, end_idx, metric3d_batch_size=ns.metric3d_batch_size)
     elif ns.stage == "infiller":
@@ -562,6 +580,7 @@ def get_parser():
     parser.add_argument("--frame_backend", type=str, default="decord", choices=["decord", "opencv"], help="Frame decode backend")
     parser.add_argument("--video_list", type=str, help="Optional file with one video path per line for persistent worker mode")
     parser.add_argument("--persistent_worker", action="store_true", help="Run as long-lived stage worker for multiple videos")
+    parser.add_argument("--enable_profiler", action="store_true", help="Enable torch profiler to diagnose performance bottlenecks")
     return parser
 
 

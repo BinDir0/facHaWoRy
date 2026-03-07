@@ -84,6 +84,7 @@ class BatchScheduler:
         scheduler_mode: str,
         persistent_worker: bool,
         max_stage_retries: int,
+        enable_profiler: bool = False,
     ):
         self.video_paths = video_paths
         self.gpus = gpus
@@ -104,6 +105,7 @@ class BatchScheduler:
         self.scheduler_mode = scheduler_mode
         self.persistent_worker = persistent_worker
         self.max_stage_retries = max_stage_retries
+        self.enable_profiler = enable_profiler
 
         self.log_dir = run_dir / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +173,8 @@ class BatchScheduler:
         cmd.extend(["--render_batch_size", str(self.render_batch_size)])
         cmd.extend(["--detect_batch_size", str(self.detect_batch_size)])
         cmd.extend(["--frame_backend", self.frame_backend])
+        if self.enable_profiler:
+            cmd.append("--enable_profiler")
         if self.resume:
             cmd.append("--resume")
 
@@ -216,6 +220,8 @@ class BatchScheduler:
         ]
         if self.img_focal is not None:
             cmd.extend(["--img_focal", str(self.img_focal)])
+        if self.enable_profiler:
+            cmd.append("--enable_profiler")
         if self.resume:
             cmd.append("--resume")
 
@@ -974,6 +980,11 @@ def get_parser():
         help="Frame decode backend",
     )
     parser.add_argument(
+        "--enable_profiler",
+        action="store_true",
+        help="Enable torch profiler to diagnose performance bottlenecks (generates trace files)",
+    )
+    parser.add_argument(
         "--start",
         type=int,
         default=0,
@@ -1099,6 +1110,7 @@ def main():
         scheduler_mode=args.scheduler_mode,
         persistent_worker=args.persistent_worker,
         max_stage_retries=args.max_stage_retries,
+        enable_profiler=args.enable_profiler,
     )
 
     success = scheduler.run()

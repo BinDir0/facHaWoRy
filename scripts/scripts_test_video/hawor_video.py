@@ -76,7 +76,7 @@ def build_infiller_runner(weight_path, device=None):
     }
 
 
-def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None):
+def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None, profiler=None):
     import time
     timing = {}
     t_start_total = time.time()
@@ -302,6 +302,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
         all_boxes = np.concatenate(all_boxes_list, axis=0) if len(all_boxes_list) > 1 else all_boxes_list[0]
 
         t_inf = time.time()
+        if profiler:
+            profiler.step()  # Profile this inference call
         results = model.inference(
             frame_source,
             all_frame_indices,
@@ -312,6 +314,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
             num_workers=getattr(args, 'num_workers', 16),
         )
+        if profiler:
+            profiler.step()  # Profile post-inference
         timing_inference += time.time() - t_inf
 
         # Process results for each original chunk
@@ -488,8 +492,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     return frame_chunks_all, img_focal
 
-def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
-    return run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None)
+def hawor_motion_estimation(args, start_idx, end_idx, seq_folder, profiler=None):
+    return run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None, profiler=profiler)
 
 
 def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_runner=None):
