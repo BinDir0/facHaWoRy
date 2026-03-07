@@ -300,7 +300,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             img_center=img_center,
             do_flip=do_flip,
             chunk_batch_size=getattr(args, 'chunk_batch_size', 4),
-            num_workers=getattr(args, 'num_workers', 4),
+            num_workers=getattr(args, 'num_workers', 16),
         )
         timing_inference += time.time() - t_inf
 

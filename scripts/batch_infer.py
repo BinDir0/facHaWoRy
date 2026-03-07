@@ -914,7 +914,7 @@ def get_parser():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=4,
+        default=16,
         help="Number of DataLoader workers for parallel frame loading in motion stage",
     )
     parser.add_argument(

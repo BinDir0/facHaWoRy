@@ -370,7 +370,7 @@ class HAWOR(pl.LightningModule):
 
         return output
 
-    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64, num_workers=4):
+    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64, num_workers=16):
         db = TrackDatasetEval(frame_source, frame_indices, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
 
