@@ -167,6 +167,7 @@ class BatchScheduler:
         ]
         if self.img_focal is not None:
             cmd.extend(["--img_focal", str(self.img_focal)])
+        cmd.extend(["--run_dir", str(self.run_dir)])
         cmd.extend(["--chunk_batch_size", str(self.chunk_batch_size)])
         cmd.extend(["--num_workers", str(self.num_workers)])
         cmd.extend(["--metric3d_batch_size", str(self.metric3d_batch_size)])
@@ -220,6 +221,7 @@ class BatchScheduler:
         ]
         if self.img_focal is not None:
             cmd.extend(["--img_focal", str(self.img_focal)])
+        cmd.extend(["--run_dir", str(self.run_dir)])
         if self.enable_profiler:
             cmd.append("--enable_profiler")
         if self.resume:

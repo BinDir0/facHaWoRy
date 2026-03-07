@@ -511,13 +511,17 @@ def run_stage(ns):
         # Enable profiling if requested
         if getattr(ns, 'enable_profiler', False):
             from torch.profiler import profile, ProfilerActivity, schedule
-            # Save profiler traces next to the video sequence folder
-            profiler_output_dir = seq_folder.parent / "profiler_traces"
+            # Save profiler traces in batch run directory if available
+            if getattr(ns, 'run_dir', None):
+                profiler_output_dir = Path(ns.run_dir) / "profiler_traces"
+            else:
+                # Fallback for standalone usage (not called from batch_infer.py)
+                profiler_output_dir = seq_folder.parent / "profiler_traces"
             profiler_output_dir.mkdir(parents=True, exist_ok=True)
 
             with profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=schedule(wait=1, warmup=1, active=3, repeat=1),
+                schedule=schedule(wait=0, warmup=0, active=2, repeat=1),
                 on_trace_ready=lambda p: p.export_chrome_trace(
                     str(profiler_output_dir / f"motion_trace_{Path(ns.video_path).stem}.json")
                 ),
@@ -582,6 +586,7 @@ def get_parser():
     parser.add_argument("--video_list", type=str, help="Optional file with one video path per line for persistent worker mode")
     parser.add_argument("--persistent_worker", action="store_true", help="Run as long-lived stage worker for multiple videos")
     parser.add_argument("--enable_profiler", action="store_true", help="Enable torch profiler to diagnose performance bottlenecks")
+    parser.add_argument("--run_dir", type=str, help="Batch run directory for output organization")
     return parser
 
 
