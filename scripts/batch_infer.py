@@ -634,10 +634,24 @@ class BatchScheduler:
         if self.resume:
             self.load_status()
 
-        # Initialize stage status based on actual .done markers
-        # Note: .done marker checking is now done lazily per-stage in get_stage_pending_videos()
-        # This avoids O(N) filesystem operations at startup, which is slow for large datasets
-        # (e.g., 150 videos from 45K total would do 600 .exists() checks at startup)
+        # Initialize stage status for new videos (those without status yet)
+        # For resume mode, we check .done markers only for videos with empty status
+        # This avoids O(N) filesystem operations for videos that already have status
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from batch_worker import get_seq_folder
+
+        for vp in self.video_paths:
+            task = self.tasks[vp]
+
+            # If this video has no stage status yet, initialize from .done markers
+            if not task.stage_status:
+                seq_folder = get_seq_folder(vp)
+                for stage in self.stages:
+                    done_marker = seq_folder / f".{stage}.done"
+                    if done_marker.exists():
+                        task.stage_status[stage] = "completed"
+                    else:
+                        task.stage_status[stage] = "pending"
 
         self.emit_event("batch_start", total_videos=len(self.video_paths), gpus=self.gpus, mode="wave")
 
