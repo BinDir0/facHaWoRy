@@ -84,11 +84,12 @@ def extract_frames_decord(
     num_batches = (num_frames + batch_size - 1) // batch_size
 
     frames_extracted = 0
-    iterator = range(num_batches)
-    if verbose:
-        iterator = tqdm(iterator, desc="Extracting frames")
 
-    for batch_idx in iterator:
+    # Use tqdm to show progress in frames (not batches)
+    if verbose:
+        pbar = tqdm(total=num_frames, desc=f"Extracting {os.path.basename(video_path)}", unit="frames")
+
+    for batch_idx in range(num_batches):
         start_idx = batch_idx * batch_size
         end_idx = min(start_idx + batch_size, num_frames)
 
@@ -110,6 +111,13 @@ def extract_frames_decord(
                 frames_extracted += 1
             else:
                 print(f"WARNING: Failed to save frame {frame_idx}", file=sys.stderr)
+
+        # Update progress bar
+        if verbose:
+            pbar.update(len(indices))
+
+    if verbose:
+        pbar.close()
 
     if verbose:
         print(f"✓ Extracted {frames_extracted}/{num_frames} frames")
