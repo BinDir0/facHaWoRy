@@ -555,7 +555,10 @@ class BatchScheduler:
 
         try:
             result = run_stage_with_runtime(runtime, task_ns)
-            return result.get("status") in ("success", "skipped")
+            success = result.get("status") in ("success", "skipped")
+            if not success:
+                print(f"WARNING: run_stage_with_runtime returned unexpected status: {result.get('status')}")
+            return success
         except Exception as e:
             print(f"Error processing {video_path} on GPU {gpu}: {e}")
             import traceback
