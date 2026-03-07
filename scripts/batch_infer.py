@@ -623,6 +623,23 @@ class BatchScheduler:
         if self.resume:
             self.load_status()
 
+        # Initialize stage status based on actual .done markers
+        # This is critical for resume mode to work correctly
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from batch_worker import get_seq_folder
+
+        for vp in self.video_paths:
+            task = self.tasks[vp]
+            seq_folder = get_seq_folder(vp)
+
+            # Check each stage's .done marker and update status
+            for stage in self.stages:
+                done_marker = seq_folder / f".{stage}.done"
+                if done_marker.exists():
+                    # Only update if current status is pending (don't override failed/running)
+                    if task.stage_status.get(stage) == "pending":
+                        task.stage_status[stage] = "completed"
+
         self.emit_event("batch_start", total_videos=len(self.video_paths), gpus=self.gpus, mode="wave")
 
         for vp in self.video_paths:
