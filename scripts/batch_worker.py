@@ -511,7 +511,8 @@ def run_stage(ns):
         # Enable profiling if requested
         if getattr(ns, 'enable_profiler', False):
             from torch.profiler import profile, ProfilerActivity, schedule
-            profiler_output_dir = Path(ns.output_dir) / "profiler_traces"
+            # Save profiler traces next to the video sequence folder
+            profiler_output_dir = seq_folder.parent / "profiler_traces"
             profiler_output_dir.mkdir(parents=True, exist_ok=True)
 
             with profile(
