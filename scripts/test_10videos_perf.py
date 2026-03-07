@@ -61,7 +61,7 @@ def main():
     parser.add_argument("--video_list", required=True, help="Path to full video list txt")
     parser.add_argument("--num_videos", type=int, default=10, help="How many videos to test")
     parser.add_argument("--gpu", type=int, default=0, help="Single GPU id")
-    parser.add_argument("--chunk_batch_size", type=int, default=4)
+    parser.add_argument("--chunk_batch_size", type=int, default=16)
     parser.add_argument("--render_batch_size", type=int, default=8, help="Rendering batch size")
     parser.add_argument("--checkpoint", default="./weights/hawor/checkpoints/hawor.ckpt")
     parser.add_argument("--infiller_weight", default="./weights/hawor/checkpoints/infiller.pt")
