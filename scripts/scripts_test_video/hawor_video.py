@@ -141,7 +141,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
 
-    # Validate that tracks don't reference frames beyond available frames
+    # Validate and auto-fix tracks that reference frames beyond available frames
     num_frames = len(frame_source)
     if len(tracks) > 0:
         try:
@@ -151,13 +151,27 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                 if len(track_data) > 0
             )
             if max_frame_in_tracks >= num_frames:
-                raise RuntimeError(
-                    f"Track data references frame {max_frame_in_tracks} but only {num_frames} frames available. "
-                    f"This usually means:\n"
-                    f"1. detect_track stage used full video but motion stage uses extracted frames\n"
-                    f"2. Extracted frames are incomplete (missing frames {num_frames}-{max_frame_in_tracks})\n"
-                    f"Solution: Re-run detect_track stage with same frame source, or extract all frames."
-                )
+                vprint(f"WARNING: Track data references frame {max_frame_in_tracks} but only {num_frames} frames available.")
+                vprint(f"         This usually means extracted_images is incomplete.")
+                vprint(f"         Auto-fixing: Filtering out track entries with frame >= {num_frames}")
+
+                # Auto-fix: Remove track entries that reference unavailable frames
+                fixed_tracks = {}
+                total_removed = 0
+                for track_id, track_data in tracks.items():
+                    original_len = len(track_data)
+                    filtered_track = [t for t in track_data if t['frame'] < num_frames]
+                    total_removed += original_len - len(filtered_track)
+
+                    # Keep track only if it has at least 5 valid frames (same threshold as line 183)
+                    if len(filtered_track) >= 5:
+                        fixed_tracks[track_id] = filtered_track
+
+                vprint(f"         Removed {total_removed} track entries referencing unavailable frames")
+                vprint(f"         {len(tracks) - len(fixed_tracks)} tracks dropped (too short after filtering)")
+                vprint(f"         {len(fixed_tracks)} tracks remain")
+
+                tracks = fixed_tracks
         except ValueError:
             # All tracks are empty, skip validation
             pass
