@@ -75,6 +75,7 @@ class BatchScheduler:
         infiller_weight: str,
         img_focal: Optional[float],
         chunk_batch_size: int,
+        num_workers: int,
         metric3d_batch_size: int,
         render_batch_size: int,
         detect_batch_size: int,
@@ -94,6 +95,7 @@ class BatchScheduler:
         self.infiller_weight = infiller_weight
         self.img_focal = img_focal
         self.chunk_batch_size = chunk_batch_size
+        self.num_workers = num_workers
         self.metric3d_batch_size = metric3d_batch_size
         self.render_batch_size = render_batch_size
         self.detect_batch_size = detect_batch_size
@@ -164,6 +166,7 @@ class BatchScheduler:
         if self.img_focal is not None:
             cmd.extend(["--img_focal", str(self.img_focal)])
         cmd.extend(["--chunk_batch_size", str(self.chunk_batch_size)])
+        cmd.extend(["--num_workers", str(self.num_workers)])
         cmd.extend(["--metric3d_batch_size", str(self.metric3d_batch_size)])
         cmd.extend(["--render_batch_size", str(self.render_batch_size)])
         cmd.extend(["--detect_batch_size", str(self.detect_batch_size)])
@@ -207,6 +210,7 @@ class BatchScheduler:
             "--checkpoint", self.checkpoint,
             "--infiller_weight", self.infiller_weight,
             "--chunk_batch_size", str(self.chunk_batch_size),
+            "--num_workers", str(self.num_workers),
             "--render_batch_size", str(self.render_batch_size),
             "--frame_backend", self.frame_backend,
         ]
@@ -538,6 +542,7 @@ class BatchScheduler:
         task_ns.seed = 42
         task_ns.detect_batch_size = self.detect_batch_size
         task_ns.chunk_batch_size = self.chunk_batch_size
+        task_ns.num_workers = self.num_workers
         task_ns.metric3d_batch_size = self.metric3d_batch_size
 
         try:
@@ -907,6 +912,12 @@ def get_parser():
         help="Number of 16-frame chunks processed per forward in HAWOR motion stage",
     )
     parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of DataLoader workers for parallel frame loading in motion stage",
+    )
+    parser.add_argument(
         "--metric3d_batch_size",
         type=int,
         default=8,
@@ -1062,6 +1073,7 @@ def main():
         infiller_weight=args.infiller_weight,
         img_focal=args.img_focal,
         chunk_batch_size=args.chunk_batch_size,
+        num_workers=args.num_workers,
         metric3d_batch_size=args.metric3d_batch_size,
         render_batch_size=args.render_batch_size,
         detect_batch_size=args.detect_batch_size,

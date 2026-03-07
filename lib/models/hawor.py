@@ -370,7 +370,7 @@ class HAWOR(pl.LightningModule):
 
         return output
 
-    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64):
+    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64, num_workers=4):
         db = TrackDatasetEval(frame_source, frame_indices, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
 
@@ -396,38 +396,56 @@ class HAWOR(pl.LightningModule):
                 'img_center': img_center,
             }
 
-        # Materialize items once, then pad to multiples of seq_len
-        items = [db[i] for i in range(total_frames)]
-        remainder = total_frames % seq_len
+        # Use DataLoader with multiple workers for parallel frame loading
+        # This overlaps data loading with GPU inference
+        from torch.utils.data import DataLoader
+
+        # Calculate effective batch size for DataLoader
+        # We want to load chunk_batch_size * seq_len frames at a time
+        dataloader_batch_size = chunk_batch_size * seq_len
+
+        # Pad dataset to multiple of dataloader_batch_size
+        remainder = total_frames % dataloader_batch_size
         if remainder != 0:
-            pad = seq_len - remainder
-            items.extend([items[-1]] * pad)
+            pad_size = dataloader_batch_size - remainder
+            # Create padded indices
+            padded_indices = list(range(total_frames)) + [total_frames - 1] * pad_size
+        else:
+            padded_indices = list(range(total_frames))
 
-        n_chunks = len(items) // seq_len
+        # Create DataLoader with prefetching
+        from torch.utils.data import Subset
+        padded_db = Subset(db, padded_indices)
 
-        for chunk_start in tqdm(range(0, n_chunks, chunk_batch_size)):
-            chunk_end = min(chunk_start + chunk_batch_size, n_chunks)
-            current_chunks = chunk_end - chunk_start
+        loader = DataLoader(
+            padded_db,
+            batch_size=dataloader_batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+            prefetch_factor=2 if num_workers > 0 else None,
+            persistent_workers=True if num_workers > 0 else False,
+        )
+
+        for batch_items in tqdm(loader, desc="Inference batches"):
+            # Reshape from (B*T, ...) to (B, T, ...)
+            current_batch_size = len(batch_items['img'])
+            current_chunks = current_batch_size // seq_len
 
             # Build (B, T, ...) batch
-            chunk_batches = []
-            for ck in range(chunk_start, chunk_end):
-                start = ck * seq_len
-                end = (ck + 1) * seq_len
-                chunk_batches.append(default_collate(items[start:end]))
-
             batch = {}
-            for k in chunk_batches[0].keys():
-                v0 = chunk_batches[0][k]
-                if type(v0) == torch.Tensor:
-                    batch[k] = torch.stack([cb[k] for cb in chunk_batches], dim=0).to(device)
+            for k, v in batch_items.items():
+                if type(v) == torch.Tensor:
+                    # Reshape (B*T, ...) -> (B, T, ...)
+                    v_shape = v.shape
+                    batch[k] = v.view(current_chunks, seq_len, *v_shape[1:]).to(device)
 
             with torch.no_grad():
                 output = self.forward(batch)
                 out = output['out']
 
             # out tensors are flattened as (B*T, ...)
-            expected = current_chunks * seq_len
+            expected = current_batch_size
             out = {k: v[:expected] for k, v in out.items()}
 
             pred_cam.append(out['pred_cam'])
