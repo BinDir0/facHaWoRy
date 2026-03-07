@@ -400,14 +400,10 @@ class HAWOR(pl.LightningModule):
         # This overlaps data loading with GPU inference
         from torch.utils.data import DataLoader
 
-        # Calculate effective batch size for DataLoader
-        # We want to load chunk_batch_size * seq_len frames at a time
-        dataloader_batch_size = chunk_batch_size * seq_len
-
-        # Pad dataset to multiple of dataloader_batch_size
-        remainder = total_frames % dataloader_batch_size
+        # Pad dataset to multiple of seq_len for chunking
+        remainder = total_frames % seq_len
         if remainder != 0:
-            pad_size = dataloader_batch_size - remainder
+            pad_size = seq_len - remainder
             # Create padded indices
             padded_indices = list(range(total_frames)) + [total_frames - 1] * pad_size
         else:
@@ -416,6 +412,11 @@ class HAWOR(pl.LightningModule):
         # Create DataLoader with prefetching
         from torch.utils.data import Subset
         padded_db = Subset(db, padded_indices)
+        total_padded = len(padded_indices)
+
+        # CRITICAL: DataLoader batch size should be chunk_batch_size * seq_len
+        # This allows workers to prefetch the next batch while GPU processes current batch
+        dataloader_batch_size = chunk_batch_size * seq_len
 
         loader = DataLoader(
             padded_db,
@@ -423,8 +424,9 @@ class HAWOR(pl.LightningModule):
             shuffle=False,
             num_workers=num_workers,
             pin_memory=True,
-            prefetch_factor=2 if num_workers > 0 else None,
-            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=4 if num_workers > 0 else None,  # Increased from 2 to 4
+            persistent_workers=False,  # Changed to False for single-pass inference
+            drop_last=False,
         )
 
         for batch_items in tqdm(loader, desc="Inference batches"):
