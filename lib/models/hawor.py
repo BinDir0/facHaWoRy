@@ -1,5 +1,6 @@
 import einops
 import numpy as np
+import os
 import torch
 import pytorch_lightning as pl
 from typing import Dict
@@ -23,6 +24,9 @@ from .mano_wrapper import MANO
 
 log = get_pylogger(__name__)
 idx = 0
+
+# Check if we should suppress verbose output
+QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
 
 class HAWOR(pl.LightningModule):
 
@@ -429,7 +433,7 @@ class HAWOR(pl.LightningModule):
             drop_last=False,
         )
 
-        for batch_items in tqdm(loader, desc="Inference batches"):
+        for batch_items in tqdm(loader, desc="Inference batches", disable=QUIET_MODE):
             # Reshape from (B*T, ...) to (B, T, ...)
             current_batch_size = len(batch_items['img'])
             current_chunks = current_batch_size // seq_len

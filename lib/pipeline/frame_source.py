@@ -146,7 +146,11 @@ def build_frame_source_auto(video_path: str, backend: str = "decord", fallback_b
     """
     from pathlib import Path
     import glob
+    import os
     from natsort import natsorted
+
+    # Check if we should suppress verbose output
+    QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
 
     video_path_obj = Path(video_path)
     video_dir = video_path_obj.parent
@@ -161,10 +165,12 @@ def build_frame_source_auto(video_path: str, backend: str = "decord", fallback_b
             image_files = natsorted(glob.glob(str(extracted_dir / "*.png")))
 
         if image_files:
-            print(f"✓ Using extracted frames from: {extracted_dir}")
-            print(f"  Found {len(image_files)} frames")
+            if not QUIET_MODE:
+                print(f"✓ Using extracted frames from: {extracted_dir}")
+                print(f"  Found {len(image_files)} frames")
             return ImageFolderFrameSource(image_files), "extracted"
 
     # Fallback to video file
-    print(f"Using video file: {video_path}")
+    if not QUIET_MODE:
+        print(f"Using video file: {video_path}")
     return build_frame_source(video_path, backend=backend, fallback_backend=fallback_backend)
