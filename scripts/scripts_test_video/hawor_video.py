@@ -196,11 +196,13 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     img = frame_source.get_frame(0, rgb=False)
     img_center = [img.shape[1] / 2, img.shape[0] / 2]# w/2, h/2
     H, W = img.shape[:2]
-    model_masks = np.zeros((len(frame_source), H, W))
+
+    # Use GPU tensor for model_masks to avoid CPU-GPU transfers
+    model_masks_gpu = torch.zeros((len(frame_source), H, W), device='cuda', dtype=torch.bool)
 
     bin_size = 128
     max_faces_per_bin = 20000
-    renderer = Renderer(img.shape[1], img.shape[0], img_focal, 'cuda', 
+    renderer = Renderer(img.shape[1], img.shape[0], img_focal, 'cuda',
                     bin_size=bin_size, max_faces_per_bin=max_faces_per_bin)
     # get faces
     faces = get_mano_faces()
@@ -220,6 +222,14 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             [78, 108, 79]])
     faces_right = np.concatenate([faces, faces_new], axis=0)
     faces_left = faces_right[:,[0,2,1]]
+
+    # Pre-create GPU tensors to avoid repeated .cuda() calls
+    faces_right_gpu = torch.from_numpy(faces_right).cuda()
+    faces_left_gpu = torch.from_numpy(faces_left).cuda()
+    cam_R_gpu = torch.eye(3).unsqueeze(0).cuda()
+    cam_T_gpu = torch.zeros(1, 3).cuda()
+    verts_color_gpu = torch.tensor([0, 0, 255, 255], device='cuda', dtype=torch.float32) / 255
+
     timing['2_setup'] = time.time() - t0
 
     t0 = time.time()
@@ -355,7 +365,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             else: # right
                 outputs = run_mano(data_out["init_trans"], data_out["init_root_orient"], data_out["init_hand_pose"], betas=data_out["init_betas"], mano_model=mano_right)
 
-            vertices = outputs["vertices"][0].cpu()  # (T, N, 3)
+            # Keep vertices on GPU to avoid CPU-GPU transfer
+            vertices = outputs["vertices"][0]  # (T, N, 3) - stays on GPU
             frame_indices = np.array(frame_ck, dtype=np.int64)
 
             # Batch rendering with smaller batch size to avoid PyTorch3D bin overflow
@@ -363,33 +374,30 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             render_batch_size = getattr(args, 'render_batch_size', 8)
             num_frames = len(frame_indices)
 
-            # Setup once per chunk (outside loop)
+            # Use pre-created GPU tensors (no repeated .cuda() calls)
             if do_flip:
-                faces = torch.from_numpy(faces_left).cuda()
+                faces = faces_left_gpu
             else:
-                faces = torch.from_numpy(faces_right).cuda()
-            cam_R = torch.eye(3).unsqueeze(0).cuda()
-            cam_T = torch.zeros(1, 3).cuda()
-            cameras, lights = renderer.create_camera_from_cv(cam_R, cam_T)
-            verts_color = torch.tensor([0, 0, 255, 255]) / 255
+                faces = faces_right_gpu
+            cameras, lights = renderer.create_camera_from_cv(cam_R_gpu, cam_T_gpu)
 
             # Batch render in groups of render_batch_size frames
             for batch_start in range(0, num_frames, render_batch_size):
                 batch_end = min(batch_start + render_batch_size, num_frames)
-                batch_vertices = vertices[batch_start:batch_end]  # (B, N, 3)
+                batch_vertices = vertices[batch_start:batch_end]  # (B, N, 3) - already on GPU
 
                 try:
                     rend, masks = renderer.render_multiple(
-                        batch_vertices.unsqueeze(0).cuda(),  # (1, B, N, 3)
-                        faces,
-                        verts_color.unsqueeze(0).cuda(),
+                        batch_vertices.unsqueeze(0),  # (1, B, N, 3) - already on GPU
+                        faces,  # already on GPU
+                        verts_color_gpu.unsqueeze(0),  # already on GPU
                         cameras,
                         lights
                     )
 
-                    # Assign masks for this batch
+                    # Accumulate masks on GPU (avoid CPU transfer)
                     for i, img_i in enumerate(range(batch_start, batch_end)):
-                        model_masks[frame_ck[img_i]] += masks[i]
+                        model_masks_gpu[frame_ck[img_i]] |= masks[i]
 
                 except RuntimeError as e:
                     if "bin_size" in str(e) or "overflow" in str(e).lower():
@@ -398,13 +406,13 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
                         for i in range(batch_start, batch_end):
                             single_vert = vertices[i:i+1]
                             rend, masks = renderer.render_multiple(
-                                single_vert.unsqueeze(0).cuda(),
+                                single_vert.unsqueeze(0),  # already on GPU
                                 faces,
-                                verts_color.unsqueeze(0).cuda(),
+                                verts_color_gpu.unsqueeze(0),
                                 cameras,
                                 lights
                             )
-                            model_masks[frame_ck[i]] += masks[0]
+                            model_masks_gpu[frame_ck[i]] |= masks[0]
                     else:
                         raise
 
@@ -417,7 +425,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     timing['3c_render'] = timing_render
 
     t0 = time.time()
-    model_masks = model_masks > 0 # bool
+    # Transfer to CPU only once at the end
+    model_masks = model_masks_gpu.cpu().numpy()  # bool tensor to numpy
 
     # Ensure output directory exists
     output_dir = f'{seq_folder}/tracks_{start_idx}_{end_idx}'

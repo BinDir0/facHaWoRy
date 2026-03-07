@@ -310,8 +310,10 @@ class Renderer():
             shininess=0
         )
         results = self.renderer(mesh, cameras=cameras, lights=lights, materials=materials)
-        image = (results[0, ..., :3].cpu().numpy() * 255).astype(np.uint8)
-        mask = results[0, ..., -1].cpu().numpy() > 0
+        # Return GPU tensors to avoid synchronization overhead
+        # Caller is responsible for .cpu() conversion if needed
+        image = results[0, ..., :3]  # Keep on GPU
+        mask = results[0, ..., -1] > 0  # Keep on GPU
         return image, mask
     
     
