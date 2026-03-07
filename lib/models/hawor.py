@@ -428,8 +428,8 @@ class HAWOR(pl.LightningModule):
             shuffle=False,
             num_workers=num_workers,
             pin_memory=True,
-            prefetch_factor=4 if num_workers > 0 else None,  # Increased from 2 to 4
-            persistent_workers=False,  # Changed to False for single-pass inference
+            prefetch_factor=8 if num_workers > 0 else None,  # Increased from 4 to 8 for better GPU utilization
+            persistent_workers=True,  # Changed to True to avoid worker recreation overhead
             drop_last=False,
         )
 
