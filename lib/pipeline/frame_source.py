@@ -1,6 +1,13 @@
 import cv2
 import numpy as np
 
+# Try to import turbojpeg for faster JPEG decoding
+try:
+    from turbojpeg import TurboJPEG
+    TURBOJPEG_AVAILABLE = True
+except ImportError:
+    TURBOJPEG_AVAILABLE = False
+
 
 class BaseFrameSource:
     def __len__(self):
@@ -69,11 +76,23 @@ class OpenCVVideoFrameSource(BaseFrameSource):
 
 
 class DecordVideoFrameSource(BaseFrameSource):
-    def __init__(self, video_path: str):
-        from decord import VideoReader, cpu
+    def __init__(self, video_path: str, use_gpu: bool = True):
+        from decord import VideoReader, cpu, gpu
 
         self.video_path = video_path
-        self._vr = VideoReader(video_path, ctx=cpu(0))
+        # Use GPU decoding if available (much faster than CPU)
+        if use_gpu:
+            try:
+                self._vr = VideoReader(video_path, ctx=gpu(0))
+                self.use_gpu = True
+            except Exception:
+                # Fallback to CPU if GPU not available
+                self._vr = VideoReader(video_path, ctx=cpu(0))
+                self.use_gpu = False
+        else:
+            self._vr = VideoReader(video_path, ctx=cpu(0))
+            self.use_gpu = False
+
         self._num_frames = len(self._vr)
         if self._num_frames <= 0:
             raise RuntimeError(f"Video has no frames: {video_path}")
@@ -90,6 +109,14 @@ class DecordVideoFrameSource(BaseFrameSource):
             return frame
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
+    def get_batch(self, indices, rgb: bool = False):
+        """Batch frame extraction - much faster than individual get_frame calls"""
+        frames = self._vr.get_batch(indices).asnumpy()
+        if not rgb:
+            # Convert RGB to BGR for all frames
+            frames = np.stack([cv2.cvtColor(f, cv2.COLOR_RGB2BGR) for f in frames])
+        return frames
+
     def iter_frames(self, rgb: bool = False):
         for idx in range(self._num_frames):
             frame = self._vr[idx].asnumpy()
@@ -99,16 +126,40 @@ class DecordVideoFrameSource(BaseFrameSource):
 
 
 class ImageFolderFrameSource(BaseFrameSource):
-    def __init__(self, image_paths):
+    def __init__(self, image_paths, use_turbojpeg=True):
         self.image_paths = list(image_paths)
         if len(self.image_paths) == 0:
             raise RuntimeError("ImageFolderFrameSource requires non-empty image_paths")
+
+        # Initialize turbojpeg decoder if available and requested
+        self.use_turbojpeg = use_turbojpeg and TURBOJPEG_AVAILABLE
+        if self.use_turbojpeg:
+            self.jpeg_decoder = TurboJPEG()
+        else:
+            self.jpeg_decoder = None
 
     def __len__(self):
         return len(self.image_paths)
 
     def get_frame(self, index: int, rgb: bool = False):
         path = self.image_paths[index]
+
+        # Use turbojpeg for JPEG files if available (2-3x faster than cv2.imread)
+        if self.use_turbojpeg and path.lower().endswith(('.jpg', '.jpeg')):
+            try:
+                with open(path, 'rb') as f:
+                    jpeg_data = f.read()
+                # Decode directly to RGB or BGR
+                if rgb:
+                    frame = self.jpeg_decoder.decode(jpeg_data, pixel_format=0)  # RGB
+                else:
+                    frame = self.jpeg_decoder.decode(jpeg_data, pixel_format=1)  # BGR
+                return frame
+            except Exception:
+                # Fallback to cv2 if turbojpeg fails
+                pass
+
+        # Fallback to cv2.imread
         frame = cv2.imread(path)
         if frame is None:
             raise RuntimeError(f"Failed to read image: {path}")

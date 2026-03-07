@@ -425,7 +425,7 @@ class HAWOR(pl.LightningModule):
         # Aggressive parallelization: use more workers to feed GPU
         # With 120+ CPU cores, we can afford many workers
         # Each worker handles data loading/preprocessing in parallel
-        optimal_workers = min(num_workers, 32)  # Cap at 32 to avoid excessive overhead
+        optimal_workers = min(num_workers, 48)  # Increase to 48 to better utilize 120+ cores
 
         loader = DataLoader(
             padded_db,
