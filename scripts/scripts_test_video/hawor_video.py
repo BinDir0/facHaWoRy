@@ -303,6 +303,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
         t_inf = time.time()
         if profiler:
+            print(f"[PROFILER] Step before inference (track {idx})")
             profiler.step()  # Profile this inference call
         results = model.inference(
             frame_source,
@@ -315,6 +316,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             num_workers=getattr(args, 'num_workers', 16),
         )
         if profiler:
+            print(f"[PROFILER] Step after inference (track {idx})")
             profiler.step()  # Profile post-inference
         timing_inference += time.time() - t_inf
 

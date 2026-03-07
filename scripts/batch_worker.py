@@ -519,11 +519,15 @@ def run_stage(ns):
                 profiler_output_dir = seq_folder.parent / "profiler_traces"
             profiler_output_dir.mkdir(parents=True, exist_ok=True)
 
+            print(f"[PROFILER] Enabled. Output dir: {profiler_output_dir}")
+            print(f"[PROFILER] Video: {Path(ns.video_path).stem}")
+
             with profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 schedule=schedule(wait=0, warmup=0, active=2, repeat=1),
-                on_trace_ready=lambda p: p.export_chrome_trace(
-                    str(profiler_output_dir / f"motion_trace_{Path(ns.video_path).stem}.json")
+                on_trace_ready=lambda p: (
+                    print(f"[PROFILER] Trace ready, exporting to {profiler_output_dir / f'motion_trace_{Path(ns.video_path).stem}.json'}"),
+                    p.export_chrome_trace(str(profiler_output_dir / f"motion_trace_{Path(ns.video_path).stem}.json"))
                 ),
                 record_shapes=True,
                 profile_memory=True,
