@@ -121,11 +121,8 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
         batch_end = min(batch_start + metric3d_batch_size, num_frames)
         batch_indices = tstamp[batch_start:batch_end]
 
-        # Load batch of frames
-        batch_frames = []
-        for t in batch_indices:
-            frame = frame_source.get_frame(int(t), rgb=True)
-            batch_frames.append(frame)
+        # Load batch of frames (list comprehension allows backend optimization)
+        batch_frames = [frame_source.get_frame(int(t), rgb=True) for t in batch_indices]
 
         # Batch inference
         batch_depths = metric.batch_inference(batch_frames, calib)
