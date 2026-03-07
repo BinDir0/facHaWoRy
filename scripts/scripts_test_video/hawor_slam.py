@@ -56,7 +56,7 @@ def build_metric3d_runner(weight_path='thirdparty/Metric3D/weights/metric_depth_
     return metric
 
 
-def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=8):
+def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=16):  # Increased from 8 to 16
     # File and folders
     file = args.video_path
     video_root = os.path.dirname(file)
