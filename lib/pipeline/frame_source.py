@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import os
 
 # Try to import turbojpeg for faster JPEG decoding
 try:
@@ -128,6 +129,15 @@ class DecordVideoFrameSource(BaseFrameSource):
 class ImageFolderFrameSource(BaseFrameSource):
     def __init__(self, image_paths, use_turbojpeg=True):
         self.image_paths = list(image_paths)
+
+        # DEBUG logging
+        QUIET_MODE = os.environ.get("HAWOR_QUIET", "0") == "1"
+        if not QUIET_MODE:
+            print(f"DEBUG: ImageFolderFrameSource initialized with {len(self.image_paths)} frames")
+            if len(self.image_paths) > 0:
+                print(f"DEBUG: First frame: {self.image_paths[0]}")
+                print(f"DEBUG: Last frame: {self.image_paths[-1]}")
+
         if len(self.image_paths) == 0:
             raise RuntimeError("ImageFolderFrameSource requires non-empty image_paths")
 
@@ -217,17 +227,33 @@ def build_frame_source_auto(video_path: str, backend: str = "decord", fallback_b
 
     # Check for extracted frames
     extracted_dir = video_dir / video_stem / "extracted_images"
+
+    # DEBUG logging
+    if not QUIET_MODE:
+        print(f"DEBUG: build_frame_source_auto() called with video_path={video_path}")
+        print(f"DEBUG: video_dir={video_dir}, video_stem={video_stem}")
+        print(f"DEBUG: Checking for extracted frames at: {extracted_dir}")
+        print(f"DEBUG: extracted_dir.exists()={extracted_dir.exists()}, is_dir()={extracted_dir.is_dir() if extracted_dir.exists() else 'N/A'}")
+
     if extracted_dir.exists() and extracted_dir.is_dir():
         # Find all image files (try jpg first, then png)
         image_files = natsorted(glob.glob(str(extracted_dir / "*.jpg")))
+        if not QUIET_MODE:
+            print(f"DEBUG: Found {len(image_files)} .jpg files")
+
         if not image_files:
             image_files = natsorted(glob.glob(str(extracted_dir / "*.png")))
+            if not QUIET_MODE:
+                print(f"DEBUG: Found {len(image_files)} .png files")
 
         if image_files:
             if not QUIET_MODE:
                 print(f"✓ Using extracted frames from: {extracted_dir}")
                 print(f"  Found {len(image_files)} frames")
             return ImageFolderFrameSource(image_files), "extracted"
+        else:
+            if not QUIET_MODE:
+                print(f"WARNING: extracted_images directory exists but no image files found!")
 
     # Fallback to video file
     if not QUIET_MODE:
