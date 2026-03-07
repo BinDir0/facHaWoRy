@@ -203,6 +203,18 @@ def main():
         help="Number of parallel workers for batch processing (default: 1)"
     )
     parser.add_argument(
+        "--start",
+        type=int,
+        default=None,
+        help="Start index in video list (for distributed processing across machines)"
+    )
+    parser.add_argument(
+        "--end",
+        type=int,
+        default=None,
+        help="End index in video list (for distributed processing across machines)"
+    )
+    parser.add_argument(
         "--skip_existing",
         action="store_true",
         help="Skip videos that already have extracted frames"
@@ -227,6 +239,25 @@ def main():
         print("ERROR: No videos to process", file=sys.stderr)
         sys.exit(1)
 
+    # Apply start/end slicing for distributed processing
+    total_videos = len(video_paths)
+    if args.start is not None or args.end is not None:
+        start_idx = args.start if args.start is not None else 0
+        end_idx = args.end if args.end is not None else total_videos
+
+        # Validate indices
+        if start_idx < 0 or start_idx >= total_videos:
+            print(f"ERROR: --start {start_idx} is out of range [0, {total_videos})", file=sys.stderr)
+            sys.exit(1)
+        if end_idx < start_idx or end_idx > total_videos:
+            print(f"ERROR: --end {end_idx} is invalid (must be in range [{start_idx}, {total_videos}])", file=sys.stderr)
+            sys.exit(1)
+
+        video_paths = video_paths[start_idx:end_idx]
+        print(f"Processing slice [{start_idx}:{end_idx}] of {total_videos} total videos ({len(video_paths)} videos)")
+    else:
+        print(f"Processing all {total_videos} videos")
+
     # Validate video paths
     valid_paths = []
     for vp in video_paths:
@@ -245,7 +276,6 @@ def main():
         quality = 85
         print("Fast mode enabled: using quality=85 for faster extraction")
 
-    print(f"Processing {len(valid_paths)} video(s)")
     print(f"Output format: <video_dir>/<video_stem>/extracted_images/")
     print(f"Quality: {quality}, Format: {args.format}")
     print(f"Workers: {args.num_workers}")
