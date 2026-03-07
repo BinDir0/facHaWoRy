@@ -422,14 +422,18 @@ class HAWOR(pl.LightningModule):
         # This allows workers to prefetch the next batch while GPU processes current batch
         dataloader_batch_size = chunk_batch_size * seq_len
 
+        # Optimize num_workers: too many workers cause CPU contention
+        # Empirical value: 4-8 workers per GPU is optimal
+        optimal_workers = min(num_workers, max(4, os.cpu_count() // 4))
+
         loader = DataLoader(
             padded_db,
             batch_size=dataloader_batch_size,
             shuffle=False,
-            num_workers=num_workers,
+            num_workers=optimal_workers,  # Use optimized worker count
             pin_memory=True,
-            prefetch_factor=8 if num_workers > 0 else None,  # Increased from 4 to 8 for better GPU utilization
-            persistent_workers=True,  # Changed to True to avoid worker recreation overhead
+            prefetch_factor=4 if optimal_workers > 0 else None,  # Reduced from 8 to 4 to reduce memory pressure
+            persistent_workers=True,  # Keep workers alive between videos in wave mode
             drop_last=False,
         )
 
