@@ -187,6 +187,10 @@ def is_stage_complete(stage: str, seq_folder: Path, fast_check=False):
         seq_folder: Sequence folder path
         fast_check: If True, use ultra-fast check (only check .done marker file)
     """
+    # Check if seq_folder exists first
+    if not seq_folder.exists():
+        return False
+
     if fast_check:
         # Ultra-fast check: only check .done marker file
         done_marker = seq_folder / f".{stage}.done"
