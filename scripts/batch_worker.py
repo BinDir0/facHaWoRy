@@ -524,7 +524,7 @@ def run_stage(ns):
 
             with profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=schedule(wait=0, warmup=0, active=2, repeat=1),
+                schedule=schedule(wait=0, warmup=1, active=3, repeat=1),
                 on_trace_ready=lambda p: (
                     print(f"[PROFILER] Trace ready, exporting to {profiler_output_dir / f'motion_trace_{Path(ns.video_path).stem}.json'}"),
                     p.export_chrome_trace(str(profiler_output_dir / f"motion_trace_{Path(ns.video_path).stem}.json"))

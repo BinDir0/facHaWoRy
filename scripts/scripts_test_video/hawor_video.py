@@ -430,6 +430,11 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     timing['3b_postprocess'] = timing_postprocess
     timing['3c_render'] = timing_render
 
+    # Final profiler step to ensure trace export completes
+    if profiler:
+        print(f"[PROFILER] Final step after all tracks processed")
+        profiler.step()
+
     t0 = time.time()
     # Transfer to CPU only once at the end
     model_masks = model_masks_gpu.cpu().numpy()  # bool tensor to numpy
