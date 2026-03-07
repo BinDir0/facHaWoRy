@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from lib.pipeline.frame_source import build_frame_source
+from lib.pipeline.frame_source import build_frame_source_auto
 from lib.pipeline.tools import parse_chunks, parse_chunks_hand_frame
 from lib.models.hawor import HAWOR
 from lib.eval_utils.custom_utils import cam2world_convert, load_slam_cam
@@ -137,7 +137,7 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
 
     video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source(video_path, backend=frame_backend)
+    frame_source, _ = build_frame_source_auto(video_path, backend=frame_backend)
 
     tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
     img_focal = args.img_focal
@@ -492,7 +492,7 @@ def run_infiller_for_video(args, start_idx, end_idx, frame_chunks_all, infiller_
 
     video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source(video_path, backend=frame_backend)
+    frame_source, _ = build_frame_source_auto(video_path, backend=frame_backend)
     seq_folder = os.path.join(os.path.dirname(video_path), os.path.basename(video_path).split('.')[0])
 
     # Previous steps

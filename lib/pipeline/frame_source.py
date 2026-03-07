@@ -130,3 +130,41 @@ def build_frame_source(video_path: str, backend: str = "decord", fallback_backen
         return OpenCVVideoFrameSource(video_path), "opencv"
 
     raise ValueError(f"Unsupported backend: {backend}")
+
+
+def build_frame_source_auto(video_path: str, backend: str = "decord", fallback_backend: str = "opencv"):
+    """
+    Automatically choose frame source based on availability.
+
+    Priority:
+    1. If <video_dir>/<video_stem>/extracted_images/ exists, use ImageFolderFrameSource
+    2. Otherwise, use video file with specified backend
+
+    Returns:
+        tuple: (frame_source, source_type)
+            source_type: "extracted" or backend name ("decord"/"opencv")
+    """
+    from pathlib import Path
+    import glob
+    from natsort import natsorted
+
+    video_path_obj = Path(video_path)
+    video_dir = video_path_obj.parent
+    video_stem = video_path_obj.stem
+
+    # Check for extracted frames
+    extracted_dir = video_dir / video_stem / "extracted_images"
+    if extracted_dir.exists() and extracted_dir.is_dir():
+        # Find all image files (try jpg first, then png)
+        image_files = natsorted(glob.glob(str(extracted_dir / "*.jpg")))
+        if not image_files:
+            image_files = natsorted(glob.glob(str(extracted_dir / "*.png")))
+
+        if image_files:
+            print(f"✓ Using extracted frames from: {extracted_dir}")
+            print(f"  Found {len(image_files)} frames")
+            return ImageFolderFrameSource(image_files), "extracted"
+
+    # Fallback to video file
+    print(f"Using video file: {video_path}")
+    return build_frame_source(video_path, backend=backend, fallback_backend=fallback_backend)

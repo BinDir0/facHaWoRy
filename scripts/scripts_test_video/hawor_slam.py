@@ -13,7 +13,7 @@ import cv2
 from pycocotools import mask as masktool
 from lib.pipeline.masked_droid_slam import *
 from lib.pipeline.est_scale import *
-from lib.pipeline.frame_source import build_frame_source
+from lib.pipeline.frame_source import build_frame_source_auto
 from hawor.utils.process import block_print, enable_print
 
 sys.path.insert(0, os.path.dirname(__file__) + '/../../thirdparty/Metric3D')
@@ -66,7 +66,7 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     video_folder = os.path.join(video_root, video)
 
     frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source(file, backend=frame_backend)
+    frame_source, _ = build_frame_source_auto(file, backend=frame_backend)
 
     first_img = frame_source.get_frame(0, rgb=False)
     height, width, _ = first_img.shape

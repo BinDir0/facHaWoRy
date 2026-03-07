@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__) + '/../..')
 
-from lib.pipeline.frame_source import build_frame_source
+from lib.pipeline.frame_source import build_frame_source_auto
 from lib.pipeline.tools import detect_track
 
 # Check if we should suppress verbose output
@@ -27,7 +27,7 @@ def detect_track_video(args, detector_runner=None, force=False, detect_batch_siz
     vprint(f'Running detect_track on {file} ...')
 
     backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, backend_used = build_frame_source(file, backend=backend)
+    frame_source, backend_used = build_frame_source_auto(file, backend=backend)
     vprint(f'Frame backend: {backend_used}')
 
     ##### Detection + Track #####

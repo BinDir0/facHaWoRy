@@ -430,8 +430,8 @@ class BatchScheduler:
         sys.path.insert(0, str(PROJECT_ROOT / "lib" / "pipeline"))
         from tools import detect_track_multivideo
         from batch_worker import get_seq_folder, is_stage_complete
-        sys.path.insert(0, str(PROJECT_ROOT / "lib"))
-        from frame_source import build_frame_source
+        sys.path.insert(0, str(PROJECT_ROOT / "lib" / "pipeline"))
+        from frame_source import build_frame_source_auto
 
         batch_size = self.detect_video_batch_size
 
@@ -468,7 +468,7 @@ class BatchScheduler:
             frame_counts = {}  # Cache frame counts to avoid rebuilding frame sources
             for idx, vp in enumerate(videos_to_process):
                 try:
-                    fs, _ = build_frame_source(vp, backend=self.frame_backend)
+                    fs, _ = build_frame_source_auto(vp, backend=self.frame_backend)
                     video_sources.append((idx, fs))
                     frame_counts[idx] = len(fs)  # Cache frame count
                 except Exception as e:
@@ -501,7 +501,7 @@ class BatchScheduler:
                         end_idx = frame_counts.get(idx, 0)
                         if end_idx == 0:
                             # Fallback if not in cache
-                            fs, _ = build_frame_source(vp, backend=self.frame_backend)
+                            fs, _ = build_frame_source_auto(vp, backend=self.frame_backend)
                             end_idx = len(fs)
 
                         # Save outputs
