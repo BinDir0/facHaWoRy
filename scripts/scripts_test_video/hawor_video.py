@@ -14,7 +14,7 @@ from lib.models.hawor import HAWOR
 from lib.eval_utils.custom_utils import cam2world_convert, load_slam_cam
 from lib.eval_utils.custom_utils import interpolate_bboxes, validate_motion_velocity
 from lib.eval_utils.filling_utils import filling_postprocess, filling_preprocess
-from lib.vis.renderer import Renderer
+import cv2
 from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
 from hawor.utils.rotation import angle_axis_to_rotation_matrix, rotation_matrix_to_angle_axis
 from infiller.lib.model.network import TransformerModel
@@ -48,6 +48,13 @@ def build_motion_runner(checkpoint_path, device=None):
     device = device or (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
     model = model.to(device)
     model.eval()
+    # torch.compile with CUDA graphs for ViT backbone (10-30% speedup)
+    if hasattr(torch, 'compile') and device.type == 'cuda':
+        try:
+            model.backbone = torch.compile(model.backbone, mode="reduce-overhead")
+            vprint("[torch.compile] ViT backbone compiled with mode='reduce-overhead'")
+        except Exception as e:
+            vprint(f"[torch.compile] Skipping backbone compilation: {e}")
     return {
         'model': model,
         'model_cfg': model_cfg,
@@ -248,10 +255,6 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     # Use GPU tensor for model_masks to avoid CPU-GPU transfers
     model_masks_gpu = torch.zeros((len(frame_source), H, W), device='cuda', dtype=torch.bool)
 
-    bin_size = 128
-    max_faces_per_bin = 20000
-    renderer = Renderer(img.shape[1], img.shape[0], img_focal, 'cuda',
-                    bin_size=bin_size, max_faces_per_bin=max_faces_per_bin)
     # get faces
     faces = get_mano_faces()
     faces_new = np.array([[92, 38, 234],
@@ -270,13 +273,6 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             [78, 108, 79]])
     faces_right = np.concatenate([faces, faces_new], axis=0)
     faces_left = faces_right[:,[0,2,1]]
-
-    # Pre-create GPU tensors to avoid repeated .cuda() calls
-    faces_right_gpu = torch.from_numpy(faces_right).cuda()
-    faces_left_gpu = torch.from_numpy(faces_left).cuda()
-    cam_R_gpu = torch.eye(3).unsqueeze(0).cuda()
-    cam_T_gpu = torch.zeros(1, 3).cuda()
-    verts_color_gpu = torch.tensor([0, 0, 255, 255], device='cuda', dtype=torch.float32) / 255
 
     timing['2_setup'] = time.time() - t0
 
@@ -437,52 +433,22 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             vertices = outputs["vertices"][0]  # (T, N, 3) - stays on GPU
             frame_indices = np.array(frame_ck, dtype=np.int64)
 
-            # Batch rendering with smaller batch size to avoid PyTorch3D bin overflow
-            # Render multiple frames at a time instead of all frames or single frame
-            render_batch_size = getattr(args, 'render_batch_size', 8)
-            num_frames = len(frame_indices)
+            # Generate binary masks via 2D projection + cv2.fillPoly
+            # (replaces PyTorch3D GPU rasterizer — only binary mask is needed)
+            faces_np = faces_left if do_flip else faces_right  # (F, 3) numpy
 
-            # Use pre-created GPU tensors (no repeated .cuda() calls)
-            if do_flip:
-                faces = faces_left_gpu
-            else:
-                faces = faces_right_gpu
-            cameras, lights = renderer.create_camera_from_cv(cam_R_gpu, cam_T_gpu)
+            # Project all vertices to 2D in one batch on GPU, then transfer once
+            verts_2d = torch.zeros(vertices.shape[0], vertices.shape[1], 2, device=vertices.device)
+            verts_2d[..., 0] = vertices[..., 0] / (vertices[..., 2] + 1e-8) * img_focal + img_center[0]
+            verts_2d[..., 1] = vertices[..., 1] / (vertices[..., 2] + 1e-8) * img_focal + img_center[1]
+            verts_2d_np = verts_2d.cpu().numpy().astype(np.int32)  # (T, 778, 2)
 
-            # Batch render in groups of render_batch_size frames
-            for batch_start in range(0, num_frames, render_batch_size):
-                batch_end = min(batch_start + render_batch_size, num_frames)
-                batch_vertices = vertices[batch_start:batch_end]  # (B, N, 3) - already on GPU
-
-                try:
-                    rend, masks = renderer.render_multiple(
-                        batch_vertices.unsqueeze(0),  # (1, B, N, 3) - already on GPU
-                        faces,  # already on GPU
-                        verts_color_gpu.unsqueeze(0),  # already on GPU
-                        cameras,
-                        lights
-                    )
-
-                    # Accumulate masks on GPU (avoid CPU transfer)
-                    for i, img_i in enumerate(range(batch_start, batch_end)):
-                        model_masks_gpu[frame_ck[img_i]] |= masks[i]
-
-                except RuntimeError as e:
-                    if "bin_size" in str(e) or "overflow" in str(e).lower():
-                        # PyTorch3D bin overflow - fall back to single-frame rendering
-                        vprint(f"Warning: PyTorch3D bin overflow with batch_size={batch_end-batch_start}, falling back to single-frame rendering")
-                        for i in range(batch_start, batch_end):
-                            single_vert = vertices[i:i+1]
-                            rend, masks = renderer.render_multiple(
-                                single_vert.unsqueeze(0),  # already on GPU
-                                faces,
-                                verts_color_gpu.unsqueeze(0),
-                                cameras,
-                                lights
-                            )
-                            model_masks_gpu[frame_ck[i]] |= masks[0]
-                    else:
-                        raise
+            # Vectorized triangle lookup: (F, 3, 2) per frame
+            for i, fi in enumerate(frame_ck):
+                tris = verts_2d_np[i][faces_np]  # (F, 3, 2)
+                mask_frame = np.zeros((H, W), dtype=np.uint8)
+                cv2.fillPoly(mask_frame, tris, 1)
+                model_masks_gpu[fi] |= torch.from_numpy(mask_frame.view(np.bool_)).cuda()
 
             timing_render += time.time() - t_rend
         timing_postprocess += time.time() - t_post
