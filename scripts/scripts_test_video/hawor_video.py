@@ -510,41 +510,43 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     output_dir = f'{seq_folder}/tracks_{start_idx}_{end_idx}'
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save with error handling and verification
-    try:
-        vprint(f"Saving model_masks.npy to {model_masks_file}")
+    # Save model_masks and frame_chunks in parallel (both are independent IO operations)
+    def _save_masks():
         np.save(model_masks_file, model_masks)
-        # Force flush to disk (if available)
-        if hasattr(os, 'sync'):
-            os.sync()
-        # Verify file was actually written
         if not os.path.exists(model_masks_file):
             raise IOError(f"File not found after save: {model_masks_file}")
         file_size = os.path.getsize(model_masks_file)
         if file_size == 0:
             raise IOError(f"File is empty after save: {model_masks_file}")
         vprint(f"✓ Saved model_masks.npy ({model_masks.shape}, {model_masks.dtype}, {file_size} bytes)")
-    except Exception as e:
-        print(f"ERROR: Failed to save model_masks.npy: {e}", file=sys.stderr)
-        print(f"  Path: {model_masks_file}", file=sys.stderr)
-        print(f"  Directory exists: {os.path.exists(output_dir)}", file=sys.stderr)
-        print(f"  Directory writable: {os.access(output_dir, os.W_OK)}", file=sys.stderr)
-        raise
 
-    try:
-        vprint(f"Saving frame_chunks_all.npy to {frame_chunks_file}")
+    def _save_chunks():
         joblib.dump(frame_chunks_all, frame_chunks_file)
-        # Verify file was actually written
         if not os.path.exists(frame_chunks_file):
             raise IOError(f"File not found after save: {frame_chunks_file}")
         file_size = os.path.getsize(frame_chunks_file)
         if file_size == 0:
             raise IOError(f"File is empty after save: {frame_chunks_file}")
         vprint(f"✓ Saved frame_chunks_all.npy ({file_size} bytes)")
-    except Exception as e:
-        print(f"ERROR: Failed to save frame_chunks_all.npy: {e}", file=sys.stderr)
-        print(f"  Path: {frame_chunks_file}", file=sys.stderr)
-        raise
+
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=2) as save_pool:
+        mask_future = save_pool.submit(_save_masks)
+        chunks_future = save_pool.submit(_save_chunks)
+        # Wait for both, propagate any errors
+        try:
+            mask_future.result()
+        except Exception as e:
+            print(f"ERROR: Failed to save model_masks.npy: {e}", file=sys.stderr)
+            print(f"  Path: {model_masks_file}", file=sys.stderr)
+            print(f"  Directory exists: {os.path.exists(output_dir)}", file=sys.stderr)
+            raise
+        try:
+            chunks_future.result()
+        except Exception as e:
+            print(f"ERROR: Failed to save frame_chunks_all.npy: {e}", file=sys.stderr)
+            print(f"  Path: {frame_chunks_file}", file=sys.stderr)
+            raise
 
     timing['4_save_results'] = time.time() - t0
 

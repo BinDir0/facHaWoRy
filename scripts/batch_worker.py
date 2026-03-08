@@ -155,8 +155,11 @@ def validate_stage_output(stage: str, seq_folder: Path, start_idx: int, end_idx:
 
         assert frame_chunks_file.exists(), "frame_chunks_all.npy missing"
         assert model_masks_file.exists(), "model_masks.npy missing"
-        model_masks = np.load(model_masks_file, allow_pickle=True)
-        assert model_masks.ndim == 3, "model_masks should be (T,H,W)"
+        # Read only the npy header (~200 bytes) instead of loading 264-622 MB
+        with open(model_masks_file, 'rb') as f:
+            version = np.lib.format.read_magic(f)
+            shape, fortran, dtype = np.lib.format._read_array_header(f, version)
+        assert len(shape) == 3, f"model_masks should be (T,H,W), got shape {shape}"
         return
 
     if stage == "slam":
@@ -393,7 +396,7 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns, prefetched_data=None):
             detect_batch_size=ns.detect_batch_size,
         )
     else:
-        start_idx, end_idx = get_track_range(seq_folder)
+        start_idx, end_idx = get_track_range(seq_folder, fast=True)
         # Verify the tracks directory actually exists
         tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
         if not tracks_dir.exists():
@@ -534,7 +537,7 @@ def run_stage(ns):
     if ns.stage == "detect_track":
         start_idx, end_idx, _, _ = detect_track_video(stage_args, detect_batch_size=ns.detect_batch_size)
     else:
-        start_idx, end_idx = get_track_range(seq_folder)
+        start_idx, end_idx = get_track_range(seq_folder, fast=True)
         # Verify the tracks directory actually exists
         tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
         if not tracks_dir.exists():

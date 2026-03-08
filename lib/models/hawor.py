@@ -160,8 +160,9 @@ class HAWOR(pl.LightningModule):
         # estimate focal length, and bbox
         bbox_info = self.bbox_est(center, scale, img_focal, img_center)
 
-        # backbone
-        feature = self.backbone(image[:,:,:,32:-32])
+        # backbone - fp16 autocast for ~40-80% throughput gain on tensor-core GPUs
+        with torch.cuda.amp.autocast(dtype=torch.float16):
+            feature = self.backbone(image[:,:,:,32:-32])
         feature = feature.float()
 
         # space-time module
