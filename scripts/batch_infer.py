@@ -383,6 +383,47 @@ class BatchScheduler:
         )
         return stage_results
 
+    def _prefetch_video_data(self, video_path: str, stage: str, runtime):
+        """Prefetch video data (frame source, tracks) in background thread.
+
+        Only useful for 'motion' stage where data loading is significant.
+        Returns a dict with prefetched data, or None if prefetch not applicable.
+        """
+        if stage != "motion":
+            return None
+
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+            from batch_worker import get_seq_folder, get_track_range, is_stage_complete
+
+            seq_folder = get_seq_folder(video_path)
+
+            # Skip if already complete (no need to prefetch)
+            if self.resume and is_stage_complete(stage, seq_folder, fast_check=True):
+                return None
+
+            start_idx, end_idx = get_track_range(seq_folder)
+            tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
+
+            # Check if output already exists (skip check)
+            frame_chunks_file = tracks_dir / "frame_chunks_all.npy"
+            model_masks_file = tracks_dir / "model_masks.npy"
+            if frame_chunks_file.exists() and model_masks_file.exists():
+                return None
+
+            # Prefetch frame source and tracks (IO-bound operations)
+            from lib.pipeline.frame_source import build_frame_source_auto
+            frame_source, _ = build_frame_source_auto(video_path, backend=self.frame_backend)
+            tracks = np.load(tracks_dir / "model_tracks.npy", allow_pickle=True).item()
+
+            return {
+                'frame_source': frame_source,
+                'tracks': tracks,
+            }
+        except Exception as e:
+            # Prefetch failure is non-fatal; data will be loaded normally
+            return None
+
     def stage_wave_worker_dynamic(self, gpu: int, stage: str, video_queue: mp.Queue, result_queue: mp.Queue):
         """Worker process that pulls videos from queue and processes them with model reuse."""
         # Set GPU for this worker
@@ -401,6 +442,8 @@ class BatchScheduler:
             img_focal=self.img_focal,
             input_type="file",
             chunk_batch_size=self.chunk_batch_size,
+            num_workers=self.num_workers,
+            render_batch_size=self.render_batch_size,
             metric3d_batch_size=self.metric3d_batch_size,
             detect_batch_size=self.detect_batch_size,
             frame_backend=self.frame_backend,
@@ -413,25 +456,55 @@ class BatchScheduler:
         if stage == 'detect_track' and self.detect_video_batch_size > 1:
             self._process_detect_track_multivideo(gpu, video_queue, result_queue, runtime)
         else:
-            # Standard single-video processing
-            while True:
+            # Standard single-video processing with prefetching
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as prefetcher:
+                # Get first video
                 try:
                     video_path = video_queue.get(timeout=1)
                 except:
-                    continue
+                    video_path = None
 
-                if video_path is None:
-                    break
+                prefetch_future = None
 
-                # Process single video with runtime
-                success = self.run_single_video_with_runtime(video_path, stage, gpu, runtime)
+                while video_path is not None:
+                    # Get prefetched data for current video (if available)
+                    prefetched_data = None
+                    if prefetch_future is not None:
+                        try:
+                            prefetched_data = prefetch_future.result()
+                        except Exception:
+                            prefetched_data = None
 
-                # Report result
-                result_queue.put({
-                    "video": video_path,
-                    "success": success,
-                    "gpu": gpu,
-                })
+                    # Peek at next video and start prefetching
+                    try:
+                        next_video = video_queue.get(timeout=0)
+                    except:
+                        next_video = None
+
+                    next_future = None
+                    if next_video is not None:
+                        next_future = prefetcher.submit(
+                            self._prefetch_video_data, next_video, stage, runtime
+                        )
+
+                    # Process current video (GPU busy here)
+                    success = self.run_single_video_with_runtime(
+                        video_path, stage, gpu, runtime,
+                        prefetched_data=prefetched_data,
+                    )
+
+                    # Report result
+                    result_queue.put({
+                        "video": video_path,
+                        "success": success,
+                        "gpu": gpu,
+                    })
+
+                    # Move to next
+                    video_path = next_video
+                    prefetch_future = next_future
 
     def _process_detect_track_multivideo(self, gpu: int, video_queue: mp.Queue, result_queue: mp.Queue, runtime):
         """Process multiple videos concurrently using cross-video batching for detect_track stage."""
@@ -534,7 +607,7 @@ class BatchScheduler:
                 for vp in videos_to_process:
                     result_queue.put({"video": vp, "success": False, "gpu": gpu})
 
-    def run_single_video_with_runtime(self, video_path: str, stage: str, gpu: int, runtime) -> bool:
+    def run_single_video_with_runtime(self, video_path: str, stage: str, gpu: int, runtime, prefetched_data=None) -> bool:
         """Run a single stage for a single video using existing runtime."""
         import argparse
         sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
@@ -554,7 +627,7 @@ class BatchScheduler:
         task_ns.metric3d_batch_size = self.metric3d_batch_size
 
         try:
-            result = run_stage_with_runtime(runtime, task_ns)
+            result = run_stage_with_runtime(runtime, task_ns, prefetched_data=prefetched_data)
             success = result.get("status") in ("success", "skipped")
             if not success:
                 print(f"WARNING: run_stage_with_runtime returned unexpected status: {result.get('status')}")

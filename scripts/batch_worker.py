@@ -47,7 +47,9 @@ def set_determinism(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # benchmark=True: safe because input sizes are fixed (256x256 crops),
+    # gives 5-15% speedup on convolutions via cuDNN auto-tuning
+    torch.backends.cudnn.benchmark = True
 
 
 def get_seq_folder(video_path: str) -> Path:
@@ -256,6 +258,8 @@ class WorkerRuntime:
         img_focal: float = None,
         input_type: str = "file",
         chunk_batch_size: int = 4,
+        num_workers: int = 16,
+        render_batch_size: int = 8,
         metric3d_batch_size: int = 8,
         detect_batch_size: int = 8,
         frame_backend: str = "decord",
@@ -266,6 +270,8 @@ class WorkerRuntime:
         self.img_focal = img_focal
         self.input_type = input_type
         self.chunk_batch_size = chunk_batch_size
+        self.num_workers = num_workers
+        self.render_batch_size = render_batch_size
         self.metric3d_batch_size = metric3d_batch_size
         self.detect_batch_size = detect_batch_size
         self.frame_backend = frame_backend
@@ -274,6 +280,8 @@ class WorkerRuntime:
         self.motion_runner = None
         self.metric_runner = None
         self.infiller_runner = None
+        self.mano_right = None
+        self.mano_left = None
 
         if self.gpu is not None and self.gpu != "":
             os.environ["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
@@ -289,6 +297,8 @@ class WorkerRuntime:
         args.checkpoint = self.checkpoint
         args.infiller_weight = self.infiller_weight
         args.chunk_batch_size = self.chunk_batch_size
+        args.num_workers = self.num_workers
+        args.render_batch_size = self.render_batch_size
         args.metric3d_batch_size = self.metric3d_batch_size
         args.detect_batch_size = self.detect_batch_size
         args.frame_backend = self.frame_backend
@@ -306,6 +316,29 @@ class WorkerRuntime:
             from scripts.scripts_test_video.hawor_video import build_motion_runner
 
             self.motion_runner = build_motion_runner(self.checkpoint)
+
+            # Cache MANO models (created once per worker, reused across videos)
+            from lib.models.mano_wrapper import MANO
+            device = self.motion_runner['device']
+
+            self.mano_right = MANO(
+                data_dir='_DATA/data/',
+                model_path='_DATA/data/mano',
+                gender='neutral',
+                num_hand_joints=15,
+                create_body_pose=False,
+            ).to(device)
+
+            self.mano_left = MANO(
+                data_dir='_DATA/data_left/',
+                model_path='_DATA/data_left/mano_left',
+                gender='neutral',
+                num_hand_joints=15,
+                create_body_pose=False,
+                is_rhand=False,
+            ).to(device)
+            # Fix MANO shapedirs of the left hand bug
+            self.mano_left.shapedirs[:, 0, :] *= -1
 
         if stage == "slam" and self.metric_runner is None:
             from scripts.scripts_test_video.hawor_slam import build_metric3d_runner
@@ -336,7 +369,7 @@ def build_stage_args(ns):
     return args
 
 
-def run_stage_with_runtime(runtime: WorkerRuntime, ns):
+def run_stage_with_runtime(runtime: WorkerRuntime, ns, prefetched_data=None):
     stage_args = runtime.build_stage_args(ns.video_path)
     seq_folder = get_seq_folder(ns.video_path)
 
@@ -374,12 +407,17 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns):
                 raise FileNotFoundError(f"Tracks directory not found: {tracks_dir}")
 
     if ns.stage == "motion":
+        mano_models = None
+        if runtime.mano_right is not None and runtime.mano_left is not None:
+            mano_models = {'right': runtime.mano_right, 'left': runtime.mano_left}
         run_motion_for_video(
             stage_args,
             start_idx,
             end_idx,
             str(seq_folder),
             motion_runner=runtime.motion_runner,
+            mano_models=mano_models,
+            prefetched_data=prefetched_data,
         )
     elif ns.stage == "slam":
         hawor_slam(stage_args, start_idx, end_idx, metric_runner=runtime.metric_runner, metric3d_batch_size=ns.metric3d_batch_size)
@@ -420,6 +458,8 @@ def worker_runtime_loop(ns):
         img_focal=ns.img_focal,
         input_type=ns.input_type,
         chunk_batch_size=ns.chunk_batch_size,
+        num_workers=getattr(ns, 'num_workers', 16),
+        render_batch_size=getattr(ns, 'render_batch_size', 8),
         frame_backend=ns.frame_backend,
     )
 

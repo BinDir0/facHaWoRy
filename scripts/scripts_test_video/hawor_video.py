@@ -76,7 +76,7 @@ def build_infiller_runner(weight_path, device=None):
     }
 
 
-def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None, profiler=None):
+def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=None, profiler=None, mano_models=None, prefetched_data=None):
     import time
     timing = {}
     t_start_total = time.time()
@@ -109,37 +109,49 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     model = motion_runner['model']
 
     # Create MANO models once for reuse (avoid recreation overhead)
-    from lib.models.mano_wrapper import MANO
     device = motion_runner['device']
 
-    # Right hand MANO model
-    MANO_cfg_right = {
-        'data_dir': '_DATA/data/',
-        'model_path': '_DATA/data/mano',
-        'gender': 'neutral',
-        'num_hand_joints': 15,
-        'create_body_pose': False
-    }
-    mano_right = MANO(**MANO_cfg_right).to(device)
+    if mano_models is not None:
+        # Reuse cached MANO models from WorkerRuntime
+        mano_right = mano_models['right']
+        mano_left = mano_models['left']
+    else:
+        # Create MANO models (standalone/backward-compatible path)
+        from lib.models.mano_wrapper import MANO
 
-    # Left hand MANO model
-    MANO_cfg_left = {
-        'data_dir': '_DATA/data_left/',
-        'model_path': '_DATA/data_left/mano_left',
-        'gender': 'neutral',
-        'num_hand_joints': 15,
-        'create_body_pose': False,
-        'is_rhand': False
-    }
-    mano_left = MANO(**MANO_cfg_left).to(device)
-    # Fix MANO shapedirs of the left hand bug
-    mano_left.shapedirs[:, 0, :] *= -1
+        # Right hand MANO model
+        MANO_cfg_right = {
+            'data_dir': '_DATA/data/',
+            'model_path': '_DATA/data/mano',
+            'gender': 'neutral',
+            'num_hand_joints': 15,
+            'create_body_pose': False
+        }
+        mano_right = MANO(**MANO_cfg_right).to(device)
+
+        # Left hand MANO model
+        MANO_cfg_left = {
+            'data_dir': '_DATA/data_left/',
+            'model_path': '_DATA/data_left/mano_left',
+            'gender': 'neutral',
+            'num_hand_joints': 15,
+            'create_body_pose': False,
+            'is_rhand': False
+        }
+        mano_left = MANO(**MANO_cfg_left).to(device)
+        # Fix MANO shapedirs of the left hand bug
+        mano_left.shapedirs[:, 0, :] *= -1
 
     video_path = args.video_path
     frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source_auto(video_path, backend=frame_backend)
 
-    tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
+    # Use prefetched data if available, otherwise load fresh
+    if prefetched_data is not None:
+        frame_source = prefetched_data['frame_source']
+        tracks = prefetched_data['tracks']
+    else:
+        frame_source, _ = build_frame_source_auto(video_path, backend=frame_backend)
+        tracks = np.load(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', allow_pickle=True).item()
 
     # Validate and auto-fix tracks that reference frames beyond available frames
     num_frames = len(frame_source)
@@ -273,6 +285,22 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     timing_inference = 0
     timing_postprocess = 0
     timing_render = 0
+
+    # Background thread for IO-bound saves (JSON serialization + write)
+    from concurrent.futures import ThreadPoolExecutor
+    save_executor = ThreadPoolExecutor(max_workers=1)
+    save_futures = []
+
+    def _save_cam_space_json(data_out_cpu, seq_folder, idx, frame_ck_first, frame_ck_last):
+        """Serialize data_out to JSON and save to disk (CPU/IO-bound)."""
+        pred_dict = {k: v.tolist() for k, v in data_out_cpu.items()}
+        pred_path = os.path.join(seq_folder, 'cam_space', str(idx), f"{frame_ck_first}_{frame_ck_last}.json")
+        cam_dir = os.path.join(seq_folder, 'cam_space', str(idx))
+        if not os.path.exists(cam_dir):
+            os.makedirs(cam_dir)
+        with open(pred_path, "w") as f:
+            json.dump(pred_dict, f, indent=1)
+
     for idx in tid:
         vprint(f"tracklet {idx}:")
         trk = final_tracks[idx]
@@ -387,15 +415,13 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             data_out["init_root_orient"] = angle_axis_to_rotation_matrix(init_root)
             data_out["init_hand_pose"] = angle_axis_to_rotation_matrix(init_hand_pose)
 
-            # save camera-space results
-            pred_dict={
-                k:v.tolist() for k, v in data_out.items()
-            }
-            pred_path = os.path.join(seq_folder, 'cam_space', str(idx), f"{frame_ck[0]}_{frame_ck[-1]}.json")
-            if not os.path.exists(os.path.join(seq_folder, 'cam_space', str(idx))):
-                os.makedirs(os.path.join(seq_folder, 'cam_space', str(idx)))
-            with open(pred_path, "w") as f:
-                json.dump(pred_dict, f, indent=1)
+            # save camera-space results (background thread for IO)
+            # Clone tensors to CPU for safe background serialization
+            data_out_for_save = {k: v.clone().cpu() for k, v in data_out.items()}
+            save_futures.append(save_executor.submit(
+                _save_cam_space_json, data_out_for_save, seq_folder, idx,
+                frame_ck[0], frame_ck[-1]
+            ))
 
 
             # get hand mask
@@ -465,6 +491,11 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     timing['3a_inference'] = timing_inference
     timing['3b_postprocess'] = timing_postprocess
     timing['3c_render'] = timing_render
+
+    # Wait for all background JSON saves to complete
+    for future in save_futures:
+        future.result()  # Raises if any save failed
+    save_executor.shutdown(wait=False)
 
     # Final profiler step to ensure trace export completes
     if profiler:
