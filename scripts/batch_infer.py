@@ -1068,7 +1068,9 @@ def main():
         sys.exit(1)
 
     gpus = [int(g.strip()) for g in args.gpus.split(",")]
-    stages = [s.strip() for s in args.stages.split(",")]
+    # Normalize stage names (support short aliases)
+    STAGE_ALIASES = {"detect": "detect_track"}
+    stages = [STAGE_ALIASES.get(s.strip(), s.strip()) for s in args.stages.split(",")]
 
     if args.run_dir:
         run_dir = Path(args.run_dir)
