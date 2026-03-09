@@ -79,6 +79,9 @@ class BatchScheduler:
         metric3d_batch_size: int,
         render_batch_size: int,
         detect_batch_size: int,
+        detect_prefetch_frames: int,
+        detect_device: str,
+        detect_half_precision: bool,
         detect_video_batch_size: int,
         frame_backend: str,
         scheduler_mode: str,
@@ -100,6 +103,9 @@ class BatchScheduler:
         self.metric3d_batch_size = metric3d_batch_size
         self.render_batch_size = render_batch_size
         self.detect_batch_size = detect_batch_size
+        self.detect_prefetch_frames = detect_prefetch_frames
+        self.detect_device = detect_device
+        self.detect_half_precision = detect_half_precision
         self.detect_video_batch_size = detect_video_batch_size
         self.frame_backend = frame_backend
         self.scheduler_mode = scheduler_mode
@@ -173,6 +179,12 @@ class BatchScheduler:
         cmd.extend(["--metric3d_batch_size", str(self.metric3d_batch_size)])
         cmd.extend(["--render_batch_size", str(self.render_batch_size)])
         cmd.extend(["--detect_batch_size", str(self.detect_batch_size)])
+        cmd.extend(["--detect_prefetch_frames", str(self.detect_prefetch_frames)])
+        cmd.extend(["--detect_device", self.detect_device])
+        if self.detect_half_precision:
+            cmd.append("--detect_half_precision")
+        else:
+            cmd.append("--no-detect_half_precision")
         cmd.extend(["--frame_backend", self.frame_backend])
         if self.enable_profiler:
             cmd.append("--enable_profiler")
@@ -1047,6 +1059,30 @@ def get_parser():
         help="MUST be 1 - frame-level batching breaks tracker state",
     )
     parser.add_argument(
+        "--detect_prefetch_frames",
+        type=int,
+        default=16,
+        help="Number of frames to prefetch in background thread for detect_track stage (0=disable, recommend 16-32 for high-end systems)",
+    )
+    parser.add_argument(
+        "--detect_device",
+        type=str,
+        default="cuda:0",
+        help="Device for YOLO detector in detect_track stage (e.g., cuda:0)",
+    )
+    parser.add_argument(
+        "--detect_half_precision",
+        action="store_true",
+        default=True,
+        help="Use FP16 for YOLO detector (2x faster, default: enabled)",
+    )
+    parser.add_argument(
+        "--no-detect_half_precision",
+        dest="detect_half_precision",
+        action="store_false",
+        help="Disable FP16 for YOLO detector",
+    )
+    parser.add_argument(
         "--detect_video_batch_size",
         type=int,
         default=8,
@@ -1187,6 +1223,9 @@ def main():
         metric3d_batch_size=args.metric3d_batch_size,
         render_batch_size=args.render_batch_size,
         detect_batch_size=args.detect_batch_size,
+        detect_prefetch_frames=args.detect_prefetch_frames,
+        detect_device=args.detect_device,
+        detect_half_precision=args.detect_half_precision,
         detect_video_batch_size=args.detect_video_batch_size,
         frame_backend=args.frame_backend,
         scheduler_mode=args.scheduler_mode,
