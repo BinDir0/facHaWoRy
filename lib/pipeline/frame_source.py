@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import os
+import queue
+import threading
 
 # Try to import turbojpeg for faster JPEG decoding
 try:
@@ -8,6 +10,51 @@ try:
     TURBOJPEG_AVAILABLE = True
 except ImportError:
     TURBOJPEG_AVAILABLE = False
+
+
+class PrefetchingFrameIterator:
+    """Prefetch frames in background thread to hide I/O latency."""
+
+    def __init__(self, frame_source, rgb=False, buffer_size=16):
+        self.frame_source = frame_source
+        self.rgb = rgb
+        self.buffer_size = buffer_size
+        self.queue = queue.Queue(maxsize=buffer_size)
+        self.stop_event = threading.Event()
+        self.exception = None
+
+        self.thread = threading.Thread(target=self._prefetch_worker, daemon=True)
+        self.thread.start()
+
+    def _prefetch_worker(self):
+        try:
+            for idx, frame in self.frame_source.iter_frames(rgb=self.rgb):
+                if self.stop_event.is_set():
+                    break
+                self.queue.put((idx, frame))
+            self.queue.put(None)  # Sentinel
+        except Exception as e:
+            self.exception = e
+            self.queue.put(None)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.exception:
+            raise self.exception
+        item = self.queue.get()
+        if item is None:
+            raise StopIteration
+        return item
+
+    def __del__(self):
+        self.stop_event.set()
+        try:
+            while not self.queue.empty():
+                self.queue.get_nowait()
+        except:
+            pass
 
 
 class BaseFrameSource:

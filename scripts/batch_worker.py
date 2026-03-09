@@ -394,6 +394,9 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns, prefetched_data=None):
             detector_runner=runtime.detector_runner,
             force=ns.force,
             detect_batch_size=ns.detect_batch_size,
+            prefetch_frames=ns.detect_prefetch_frames,
+            device=ns.detect_device,
+            half_precision=ns.detect_half_precision,
         )
     else:
         start_idx, end_idx = get_track_range(seq_folder, fast=True)
@@ -535,7 +538,13 @@ def run_stage(ns):
     from scripts.scripts_test_video.hawor_video import hawor_infiller, hawor_motion_estimation
 
     if ns.stage == "detect_track":
-        start_idx, end_idx, _, _ = detect_track_video(stage_args, detect_batch_size=ns.detect_batch_size)
+        start_idx, end_idx, _, _ = detect_track_video(
+            stage_args,
+            detect_batch_size=ns.detect_batch_size,
+            prefetch_frames=ns.detect_prefetch_frames,
+            device=ns.detect_device,
+            half_precision=ns.detect_half_precision,
+        )
     else:
         start_idx, end_idx = get_track_range(seq_folder, fast=True)
         # Verify the tracks directory actually exists
@@ -626,6 +635,10 @@ def get_parser():
     # instead, which processes multiple videos in parallel while maintaining
     # per-video tracker state.
     parser.add_argument("--detect_batch_size", type=int, default=1, help="MUST be 1 - frame-level batching breaks tracker state")
+    parser.add_argument("--detect_prefetch_frames", type=int, default=16, help="Number of frames to prefetch in background thread (0=disable, recommend 16-32 for high-end systems)")
+    parser.add_argument("--detect_device", type=str, default="cuda:0", help="Device for YOLO detector (e.g., cuda:0)")
+    parser.add_argument("--detect_half_precision", action="store_true", default=True, help="Use FP16 for YOLO detector (2x faster)")
+    parser.add_argument("--no-detect_half_precision", dest="detect_half_precision", action="store_false", help="Disable FP16 for YOLO")
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")

@@ -17,7 +17,7 @@ def vprint(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def detect_track_video(args, detector_runner=None, force=False, detect_batch_size=1):
+def detect_track_video(args, detector_runner=None, force=False, detect_batch_size=1, prefetch_frames=16, device='cuda:0', half_precision=True):
     file = args.video_path
     root = os.path.dirname(file)
     seq = os.path.basename(file).split('.')[0]
@@ -57,6 +57,9 @@ def detect_track_video(args, detector_runner=None, force=False, detect_batch_siz
         hand_det_model=detector_runner,
         reset_tracker=True,
         detect_batch_size=detect_batch_size,
+        prefetch_frames=prefetch_frames,
+        device=device,
+        half_precision=half_precision,
     )
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_boxes.npy', boxes_)
     np.save(f'{seq_folder}/tracks_{start_idx}_{end_idx}/model_tracks.npy', tracks_)

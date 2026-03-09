@@ -22,7 +22,7 @@ else:
             pass
 
 
-def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4, hand_det_model=None, reset_tracker=True, detect_batch_size=1):
+def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=0.4, hand_det_model=None, reset_tracker=True, detect_batch_size=1, prefetch_frames=16, device='cuda:0', half_precision=True):
     """
     Detect and track hands in video frames.
 
@@ -34,6 +34,9 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
         hand_det_model: Optional preloaded YOLO detector for reuse across videos
         reset_tracker: Reset tracker state before running current video
         detect_batch_size: MUST be 1 - kept for API compatibility but frame-level batching is not supported
+        prefetch_frames: Number of frames to prefetch in background thread (0=disable, recommend 16-32)
+        device: Device for YOLO detector (e.g., 'cuda:0')
+        half_precision: Use FP16 for YOLO inference (2x faster on tensor cores)
 
     CRITICAL NOTE:
         Tracking is inherently sequential and stateful. Each frame's tracking depends on
@@ -53,6 +56,12 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
 
     hand_det_model = hand_det_model or YOLO('./weights/external/detector.pt')
 
+    # Configure device and precision
+    if device:
+        hand_det_model.to(device)
+    if half_precision and device and 'cuda' in device:
+        hand_det_model.model.half()
+
     if reset_tracker and hasattr(hand_det_model, 'predictor') and hand_det_model.predictor is not None:
         hand_det_model.predictor = None
 
@@ -61,8 +70,15 @@ def detect_track(frame_source, thresh=0.5, edge_margin_ratio=0.1, min_edge_conf=
     fallback_counter = 0  # Global counter for unique fallback IDs
     track_last_seen = {}  # Track when each track was last seen with good quality
 
+    # Wrap iterator with prefetching to hide I/O latency
+    if prefetch_frames > 0:
+        from lib.pipeline.frame_source import PrefetchingFrameIterator
+        frame_iter = PrefetchingFrameIterator(frame_source, rgb=False, buffer_size=prefetch_frames)
+    else:
+        frame_iter = frame_source.iter_frames(rgb=False)
+
     # Process frames sequentially to maintain tracker state
-    for t, img_cv2 in tqdm(frame_source.iter_frames(rgb=False), total=len(frame_source), disable=QUIET_MODE, desc="Detect & Track"):
+    for t, img_cv2 in tqdm(frame_iter, total=len(frame_source), disable=QUIET_MODE, desc="Detect & Track"):
         img_h, img_w = img_cv2.shape[:2]
 
         # Define edge regions
