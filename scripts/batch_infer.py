@@ -284,21 +284,50 @@ class BatchScheduler:
             return False
 
     def get_stage_pending_videos(self, stage: str) -> List[str]:
+        """Get list of videos that need processing for this stage."""
+        stage_idx = self.stages.index(stage)
+
+        # Track exclusion reasons for diagnostics
+        excluded_completed = 0
+        excluded_running = 0
+        excluded_other = 0
+        excluded_prev_stage = 0
+        excluded_done_marker = 0
+
         # First filter by status.json
         candidates = []
         for vp in self.video_paths:
             task = self.tasks[vp]
-            if stage == self.stages[0]:
-                if task.stage_status.get(stage) in ("pending", "failed"):
-                    candidates.append(vp)
-                continue
+            current_status = task.stage_status.get(stage, "pending")
 
-            stage_idx = self.stages.index(stage)
-            prev_stage = self.stages[stage_idx - 1]
-            if task.stage_status.get(prev_stage) != "completed":
-                continue
-            if task.stage_status.get(stage) in ("pending", "failed"):
-                candidates.append(vp)
+            # First stage: only pending/failed are schedulable
+            if stage_idx == 0:
+                if current_status not in ("pending", "failed"):
+                    if current_status == "completed":
+                        excluded_completed += 1
+                    elif current_status == "running":
+                        excluded_running += 1
+                    else:
+                        excluded_other += 1
+                    continue
+            else:
+                # Later stages: previous must be completed
+                prev_stage = self.stages[stage_idx - 1]
+                prev_status = task.stage_status.get(prev_stage, "pending")
+                if prev_status != "completed":
+                    excluded_prev_stage += 1
+                    continue
+
+                if current_status not in ("pending", "failed"):
+                    if current_status == "completed":
+                        excluded_completed += 1
+                    elif current_status == "running":
+                        excluded_running += 1
+                    else:
+                        excluded_other += 1
+                    continue
+
+            candidates.append(vp)
 
         # Then filter by .done markers (fast disk check)
         # This avoids queueing videos that are already complete
@@ -306,11 +335,20 @@ class BatchScheduler:
         from batch_worker import get_seq_folder
 
         pending = []
-        for video in candidates:
-            seq_folder = get_seq_folder(video)
+        for vp in candidates:
+            seq_folder = get_seq_folder(vp)
             done_marker = seq_folder / f".{stage}.done"
-            if not done_marker.exists():
-                pending.append(video)
+            if done_marker.exists():
+                excluded_done_marker += 1
+                continue
+            pending.append(vp)
+
+        # Log exclusion breakdown
+        total = len(self.video_paths)
+        print(f"  [{stage}] Eligibility: total={total} scheduled={len(pending)} "
+              f"excluded_completed={excluded_completed} excluded_running={excluded_running} "
+              f"excluded_prev_stage={excluded_prev_stage} excluded_done={excluded_done_marker} "
+              f"excluded_other={excluded_other}")
 
         return pending
 
@@ -715,9 +753,69 @@ class BatchScheduler:
 
         return final_results
 
+    def _normalize_resume_states(self):
+        """
+        Normalize stale or inconsistent stage states after resume.
+
+        Fixes two common issues:
+        1. Stale 'running' states from interrupted processes
+        2. Mismatch between .done markers and in-memory status
+        """
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from batch_worker import get_seq_folder
+
+        # Track normalization counts for logging
+        reconciled_done = defaultdict(int)
+        normalized_running = defaultdict(int)
+
+        for vp in self.video_paths:
+            task = self.tasks[vp]
+            seq_folder = get_seq_folder(vp)
+
+            for stage in self.stages:
+                done_marker = seq_folder / f".{stage}.done"
+                current_status = task.stage_status.get(stage, "pending")
+
+                # Priority 1: .done marker exists → force to completed
+                if done_marker.exists():
+                    if current_status != "completed":
+                        reconciled_done[stage] += 1
+                        task.stage_status[stage] = "completed"
+
+                # Priority 2: stale 'running' without .done → reset to pending
+                elif current_status == "running":
+                    normalized_running[stage] += 1
+                    task.stage_status[stage] = "pending"
+
+        # Log normalization summary
+        if reconciled_done or normalized_running:
+            print("\n[Resume Normalization]")
+            for stage in self.stages:
+                if reconciled_done[stage] > 0:
+                    print(f"  {stage}: reconciled {reconciled_done[stage]} from .done markers")
+                if normalized_running[stage] > 0:
+                    print(f"  {stage}: normalized {normalized_running[stage]} stale 'running' → 'pending'")
+            print()
+
     def run_wave(self):
         if self.resume:
             self.load_status()
+
+            # Normalize stale/inconsistent states on resume
+            self._normalize_resume_states()
+
+            # Log status distribution for diagnostics
+            print("\n[Resume Status Distribution]")
+            for stage in self.stages:
+                status_counts = defaultdict(int)
+                for vp in self.video_paths:
+                    task = self.tasks[vp]
+                    status = task.stage_status.get(stage, "pending")
+                    status_counts[status] += 1
+
+                print(f"  {stage}: ", end="")
+                print(", ".join(f"{status}={count}" for status, count in sorted(status_counts.items())))
+            print()
 
         # Initialize stage status for new videos (those without status yet)
         # For resume mode, we check .done markers only for videos with empty status
