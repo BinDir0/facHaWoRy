@@ -505,6 +505,9 @@ def worker_runtime_loop(ns):
             )
             traceback.print_exc()
 
+        # Free GPU memory between videos to prevent fragmentation
+        torch.cuda.empty_cache()
+
     return overall_success
 
 
@@ -621,7 +624,7 @@ def get_parser():
     parser.add_argument("--checkpoint", type=str, default="./weights/hawor/checkpoints/hawor.ckpt")
     parser.add_argument("--infiller_weight", type=str, default="./weights/hawor/checkpoints/infiller.pt")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--chunk_batch_size", type=int, default=16)
+    parser.add_argument("--chunk_batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=16, help="Number of DataLoader workers for parallel frame loading")
     parser.add_argument("--render_batch_size", type=int, default=8, help="Batch size for rendering phase")
     parser.add_argument("--metric3d_batch_size", type=int, default=32, help="Batch size for Metric3D depth estimation")

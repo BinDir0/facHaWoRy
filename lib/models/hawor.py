@@ -160,25 +160,25 @@ class HAWOR(pl.LightningModule):
         # estimate focal length, and bbox
         bbox_info = self.bbox_est(center, scale, img_focal, img_center)
 
-        # backbone - fp16 autocast for ~40-80% throughput gain on tensor-core GPUs
+        # FP16 autocast for entire forward pass on tensor-core GPUs
         with torch.cuda.amp.autocast(dtype=torch.float16):
             feature = self.backbone(image[:,:,:,32:-32])
-        feature = feature.float()
 
-        # space-time module
-        if self.st_module is not None:
-            bb = einops.repeat(bbox_info, 'b c -> b c h w', h=16, w=12)
-            feature = torch.cat([feature, bb], dim=1)
+            # space-time module
+            if self.st_module is not None:
+                bb = einops.repeat(bbox_info.half(), 'b c -> b c h w', h=16, w=12)
+                feature = torch.cat([feature, bb], dim=1)
 
-            feature = einops.rearrange(feature, '(b t) c h w -> (b h w) t c', t=16)
-            feature = self.st_module(feature)
-            feature = einops.rearrange(feature, '(b h w) t c -> (b t) c h w', h=16, w=12)
+                feature = einops.rearrange(feature, '(b t) c h w -> (b h w) t c', t=16)
+                feature = self.st_module(feature)
+                feature = einops.rearrange(feature, '(b h w) t c -> (b t) c h w', h=16, w=12)
 
-        # smpl_head: transformer + smpl
-        # pred_mano_params, pred_cam, pred_mano_params_list = self.mano_head(feature)
-        # pred_shape = pred_mano_params_list['pred_shape']
-        # pred_pose = pred_mano_params_list['pred_pose']
-        pred_pose, pred_shape, pred_cam = self.mano_head(feature)
+            pred_pose, pred_shape, pred_cam = self.mano_head(feature)
+
+        # Back to float32 for precision-sensitive operations
+        pred_pose = pred_pose.float()
+        pred_shape = pred_shape.float()
+        pred_cam = pred_cam.float()
         pred_rotmat_0 = rot6d_to_rotmat(pred_pose).reshape(-1, self.pose_num, 3, 3)
 
         # smpl motion module
@@ -376,18 +376,13 @@ class HAWOR(pl.LightningModule):
         return output
 
     def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64, num_workers=16):
+        from concurrent.futures import ThreadPoolExecutor
+
         db = TrackDatasetEval(frame_source, frame_indices, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
 
         seq_len = self.seq_len
         total_frames = len(db)
-
-        # Results
-        pred_cam = []
-        pred_pose = []
-        pred_shape = []
-        pred_rotmat = []
-        pred_trans = []
 
         if total_frames == 0:
             empty = torch.empty(0)
@@ -401,62 +396,50 @@ class HAWOR(pl.LightningModule):
                 'img_center': img_center,
             }
 
-        # Use DataLoader with multiple workers for parallel frame loading
-        # This overlaps data loading with GPU inference
-        from torch.utils.data import DataLoader
+        # --- Load all frames using thread pool (no subprocess spawn overhead) ---
+        load_workers = min(num_workers, 8)
+        with ThreadPoolExecutor(max_workers=load_workers) as executor:
+            items = list(executor.map(db.__getitem__, range(total_frames)))
 
-        # Pad dataset to multiple of seq_len for chunking
+        # Collate into tensors
+        all_tensors = {}
+        for key in items[0]:
+            vals = [item[key] for item in items]
+            if isinstance(vals[0], torch.Tensor):
+                all_tensors[key] = torch.stack(vals)
+        del items
+
+        # Pad to multiple of seq_len
         remainder = total_frames % seq_len
         if remainder != 0:
             pad_size = seq_len - remainder
-            # Create padded indices
-            padded_indices = list(range(total_frames)) + [total_frames - 1] * pad_size
-        else:
-            padded_indices = list(range(total_frames))
+            for k, v in all_tensors.items():
+                all_tensors[k] = torch.cat([v, v[-1:].expand(pad_size, *v.shape[1:])], dim=0)
+        total_padded = all_tensors['img'].shape[0]
 
-        # Create DataLoader with prefetching
-        from torch.utils.data import Subset
-        padded_db = Subset(db, padded_indices)
-        total_padded = len(padded_indices)
+        # --- Batched inference (no DataLoader) ---
+        pred_cam = []
+        pred_pose = []
+        pred_shape = []
+        pred_rotmat = []
+        pred_trans = []
 
-        # CRITICAL: DataLoader batch size should be chunk_batch_size * seq_len
-        # This allows workers to prefetch the next batch while GPU processes current batch
         dataloader_batch_size = chunk_batch_size * seq_len
 
-        # Aggressive parallelization: use more workers to feed GPU
-        # With 120+ CPU cores, we can afford many workers
-        # Each worker handles data loading/preprocessing in parallel
-        optimal_workers = min(num_workers, 48)  # Increase to 48 to better utilize 120+ cores
-
-        loader = DataLoader(
-            padded_db,
-            batch_size=dataloader_batch_size,
-            shuffle=False,
-            num_workers=optimal_workers,  # Use many workers to saturate GPU
-            pin_memory=True,
-            prefetch_factor=8 if optimal_workers > 0 else None,  # Aggressive prefetch
-            persistent_workers=True,  # Keep workers alive between videos in wave mode
-            drop_last=False,
-        )
-
-        for batch_items in tqdm(loader, desc="Inference batches", disable=QUIET_MODE):
-            # Reshape from (B*T, ...) to (B, T, ...)
-            current_batch_size = len(batch_items['img'])
+        for batch_start in range(0, total_padded, dataloader_batch_size):
+            batch_end = min(batch_start + dataloader_batch_size, total_padded)
+            current_batch_size = batch_end - batch_start
             current_chunks = current_batch_size // seq_len
 
-            # Build (B, T, ...) batch
             batch = {}
-            for k, v in batch_items.items():
-                if type(v) == torch.Tensor:
-                    # Reshape (B*T, ...) -> (B, T, ...)
-                    v_shape = v.shape
-                    batch[k] = v.view(current_chunks, seq_len, *v_shape[1:]).to(device)
+            for k, v in all_tensors.items():
+                chunk = v[batch_start:batch_end]
+                batch[k] = chunk.view(current_chunks, seq_len, *chunk.shape[1:]).to(device)
 
             with torch.no_grad():
                 output = self.forward(batch)
                 out = output['out']
 
-            # out tensors are flattened as (B*T, ...)
             expected = current_batch_size
             out = {k: v[:expected] for k, v in out.items()}
 
@@ -466,6 +449,8 @@ class HAWOR(pl.LightningModule):
             pred_rotmat.append(out['pred_rotmat'])
             pred_trans.append(out['trans_full'])
 
+        del all_tensors
+
         # Concatenate on GPU, then transfer to CPU once
         pred_cam = torch.cat(pred_cam, dim=0)[:total_frames].cpu()
         pred_pose = torch.cat(pred_pose, dim=0)[:total_frames].cpu()
@@ -473,7 +458,7 @@ class HAWOR(pl.LightningModule):
         pred_rotmat = torch.cat(pred_rotmat, dim=0)[:total_frames].cpu()
         pred_trans = torch.cat(pred_trans, dim=0)[:total_frames].cpu()
 
-        results = {
+        return {
             'pred_cam': pred_cam,
             'pred_pose': pred_pose,
             'pred_shape': pred_shape,
@@ -482,8 +467,6 @@ class HAWOR(pl.LightningModule):
             'img_focal': img_focal,
             'img_center': img_center,
         }
-
-        return results
 
     def validation_step(self, batch: Dict, batch_idx: int, dataloader_idx=0) -> Dict:
         """

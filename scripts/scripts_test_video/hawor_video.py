@@ -442,12 +442,15 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
             verts_2d[..., 1] = vertices[..., 1] / (vertices[..., 2] + 1e-8) * img_focal + img_center[1]
             verts_2d_np = verts_2d.cpu().numpy().astype(np.int32)  # (T, 778, 2)
 
-            # Vectorized triangle lookup: (F, 3, 2) per frame
+            # Vectorized triangle lookup: batch all fillPoly on CPU, single GPU transfer
+            batch_masks = np.zeros((len(frame_ck), H, W), dtype=np.uint8)
             for i, fi in enumerate(frame_ck):
                 tris = verts_2d_np[i][faces_np]  # (F, 3, 2)
-                mask_frame = np.zeros((H, W), dtype=np.uint8)
-                cv2.fillPoly(mask_frame, tris, 1)
-                model_masks_gpu[fi] |= torch.from_numpy(mask_frame.view(np.bool_)).cuda()
+                cv2.fillPoly(batch_masks[i], tris, 1)
+            batch_masks_gpu = torch.from_numpy(batch_masks.view(np.bool_)).cuda()
+            for i, fi in enumerate(frame_ck):
+                model_masks_gpu[fi] |= batch_masks_gpu[i]
+            del batch_masks_gpu
 
             timing_render += time.time() - t_rend
         timing_postprocess += time.time() - t_post
@@ -470,6 +473,8 @@ def run_motion_for_video(args, start_idx, end_idx, seq_folder, motion_runner=Non
     t0 = time.time()
     # Transfer to CPU only once at the end
     model_masks = model_masks_gpu.cpu().numpy()  # bool tensor to numpy
+    del model_masks_gpu
+    torch.cuda.empty_cache()
 
     # Ensure output directory exists
     output_dir = f'{seq_folder}/tracks_{start_idx}_{end_idx}'
