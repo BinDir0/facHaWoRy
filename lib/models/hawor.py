@@ -372,8 +372,7 @@ class HAWOR(pl.LightningModule):
         return output
 
     def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=32, num_workers=16):
-        import queue
-        import threading
+        from torch.utils.data import DataLoader, Subset
 
         db = TrackDatasetEval(frame_source, frame_indices, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
@@ -393,61 +392,46 @@ class HAWOR(pl.LightningModule):
                 'img_center': img_center,
             }
 
-        # Pad indices to multiple of seq_len
+        # Pad dataset to multiple of seq_len for chunking
         remainder = total_frames % seq_len
         if remainder != 0:
             pad_size = seq_len - remainder
             padded_indices = list(range(total_frames)) + [total_frames - 1] * pad_size
         else:
             padded_indices = list(range(total_frames))
-        total_padded = len(padded_indices)
 
+        padded_db = Subset(db, padded_indices)
+        total_padded = len(padded_indices)
         dataloader_batch_size = chunk_batch_size * seq_len
 
-        # Compute batch ranges
-        batch_ranges = []
-        for start in range(0, total_padded, dataloader_batch_size):
-            batch_ranges.append((start, min(start + dataloader_batch_size, total_padded)))
+        # DataLoader with multiprocess workers for true parallel frame loading
+        optimal_workers = min(num_workers, 16)
+        loader = DataLoader(
+            padded_db,
+            batch_size=dataloader_batch_size,
+            shuffle=False,
+            num_workers=optimal_workers,
+            pin_memory=True,
+            prefetch_factor=2 if optimal_workers > 0 else None,
+            persistent_workers=False,
+            drop_last=False,
+        )
 
-        # --- Pipelined loading: background thread loads batch N+1 while GPU processes batch N ---
-        def _load_batch(start, end):
-            """Load a batch of items sequentially (single thread = TurboJPEG safe)."""
-            items = [db[padded_indices[i]] for i in range(start, end)]
-            tensors = {}
-            for key in items[0]:
-                vals = [item[key] for item in items]
-                if isinstance(vals[0], torch.Tensor):
-                    tensors[key] = torch.stack(vals)
-            return tensors, end - start
-
-        prefetch_q = queue.Queue(maxsize=2)
-
-        def _prefetch_worker():
-            for start, end in batch_ranges:
-                prefetch_q.put(_load_batch(start, end))
-            prefetch_q.put(None)
-
-        loader_thread = threading.Thread(target=_prefetch_worker, daemon=True)
-        loader_thread.start()
-
-        # --- GPU inference loop ---
         pred_cam = []
         pred_pose = []
         pred_shape = []
         pred_rotmat = []
         pred_trans = []
 
-        while True:
-            item = prefetch_q.get()
-            if item is None:
-                break
-            batch_tensors, current_batch_size = item
+        for batch_items in loader:
+            current_batch_size = len(batch_items['img'])
             current_chunks = current_batch_size // seq_len
 
             batch = {}
-            for k, v in batch_tensors.items():
-                batch[k] = v.view(current_chunks, seq_len, *v.shape[1:]).to(device)
-            del batch_tensors
+            for k, v in batch_items.items():
+                if isinstance(v, torch.Tensor):
+                    v_shape = v.shape
+                    batch[k] = v.view(current_chunks, seq_len, *v_shape[1:]).to(device)
 
             with torch.no_grad():
                 output = self.forward(batch)
