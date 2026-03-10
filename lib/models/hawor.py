@@ -166,7 +166,7 @@ class HAWOR(pl.LightningModule):
 
             # space-time module
             if self.st_module is not None:
-                bb = einops.repeat(bbox_info.half(), 'b c -> b c h w', h=16, w=12)
+                bb = einops.repeat(bbox_info, 'b c -> b c h w', h=16, w=12)
                 feature = torch.cat([feature, bb], dim=1)
 
                 feature = einops.rearrange(feature, '(b t) c h w -> (b h w) t c', t=16)
@@ -375,8 +375,9 @@ class HAWOR(pl.LightningModule):
 
         return output
 
-    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=64, num_workers=16):
-        from concurrent.futures import ThreadPoolExecutor
+    def inference(self, frame_source, frame_indices, boxes, img_focal, img_center, device='cuda', do_flip=False, chunk_batch_size=32, num_workers=16):
+        import queue
+        import threading
 
         db = TrackDatasetEval(frame_source, frame_indices, boxes, img_focal=img_focal,
                         img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
@@ -396,45 +397,61 @@ class HAWOR(pl.LightningModule):
                 'img_center': img_center,
             }
 
-        # --- Load all frames using thread pool (no subprocess spawn overhead) ---
-        load_workers = min(num_workers, 8)
-        with ThreadPoolExecutor(max_workers=load_workers) as executor:
-            items = list(executor.map(db.__getitem__, range(total_frames)))
-
-        # Collate into tensors
-        all_tensors = {}
-        for key in items[0]:
-            vals = [item[key] for item in items]
-            if isinstance(vals[0], torch.Tensor):
-                all_tensors[key] = torch.stack(vals)
-        del items
-
-        # Pad to multiple of seq_len
+        # Pad indices to multiple of seq_len
         remainder = total_frames % seq_len
         if remainder != 0:
             pad_size = seq_len - remainder
-            for k, v in all_tensors.items():
-                all_tensors[k] = torch.cat([v, v[-1:].expand(pad_size, *v.shape[1:])], dim=0)
-        total_padded = all_tensors['img'].shape[0]
+            padded_indices = list(range(total_frames)) + [total_frames - 1] * pad_size
+        else:
+            padded_indices = list(range(total_frames))
+        total_padded = len(padded_indices)
 
-        # --- Batched inference (no DataLoader) ---
+        dataloader_batch_size = chunk_batch_size * seq_len
+
+        # Compute batch ranges
+        batch_ranges = []
+        for start in range(0, total_padded, dataloader_batch_size):
+            batch_ranges.append((start, min(start + dataloader_batch_size, total_padded)))
+
+        # --- Pipelined loading: background thread loads batch N+1 while GPU processes batch N ---
+        def _load_batch(start, end):
+            """Load a batch of items sequentially (single thread = TurboJPEG safe)."""
+            items = [db[padded_indices[i]] for i in range(start, end)]
+            tensors = {}
+            for key in items[0]:
+                vals = [item[key] for item in items]
+                if isinstance(vals[0], torch.Tensor):
+                    tensors[key] = torch.stack(vals)
+            return tensors, end - start
+
+        prefetch_q = queue.Queue(maxsize=2)
+
+        def _prefetch_worker():
+            for start, end in batch_ranges:
+                prefetch_q.put(_load_batch(start, end))
+            prefetch_q.put(None)
+
+        loader_thread = threading.Thread(target=_prefetch_worker, daemon=True)
+        loader_thread.start()
+
+        # --- GPU inference loop ---
         pred_cam = []
         pred_pose = []
         pred_shape = []
         pred_rotmat = []
         pred_trans = []
 
-        dataloader_batch_size = chunk_batch_size * seq_len
-
-        for batch_start in range(0, total_padded, dataloader_batch_size):
-            batch_end = min(batch_start + dataloader_batch_size, total_padded)
-            current_batch_size = batch_end - batch_start
+        while True:
+            item = prefetch_q.get()
+            if item is None:
+                break
+            batch_tensors, current_batch_size = item
             current_chunks = current_batch_size // seq_len
 
             batch = {}
-            for k, v in all_tensors.items():
-                chunk = v[batch_start:batch_end]
-                batch[k] = chunk.view(current_chunks, seq_len, *chunk.shape[1:]).to(device)
+            for k, v in batch_tensors.items():
+                batch[k] = v.view(current_chunks, seq_len, *v.shape[1:]).to(device)
+            del batch_tensors
 
             with torch.no_grad():
                 output = self.forward(batch)
@@ -448,8 +465,6 @@ class HAWOR(pl.LightningModule):
             pred_shape.append(out['pred_shape'])
             pred_rotmat.append(out['pred_rotmat'])
             pred_trans.append(out['trans_full'])
-
-        del all_tensors
 
         # Concatenate on GPU, then transfer to CPU once
         pred_cam = torch.cat(pred_cam, dim=0)[:total_frames].cpu()
