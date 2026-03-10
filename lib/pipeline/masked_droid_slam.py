@@ -7,6 +7,8 @@ import numpy as np
 import torch
 import os
 import argparse
+import queue
+import threading
 from PIL import Image
 import cv2
 from glob import glob
@@ -137,6 +139,32 @@ def image_stream(imagedir, calib, stride, max_frame=None):
         yield frame_idx, image[None], intrinsics
 
 
+def _prefetching_image_stream(imagedir, calib, stride, buffer_size=4):
+    """Wrap image_stream with background prefetching to overlap I/O with GPU compute."""
+    q = queue.Queue(maxsize=buffer_size)
+    exception_holder = [None]
+
+    def _worker():
+        try:
+            for item in image_stream(imagedir, calib, stride):
+                q.put(item)
+            q.put(None)  # sentinel
+        except Exception as e:
+            exception_holder[0] = e
+            q.put(None)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    while True:
+        if exception_holder[0] is not None:
+            raise exception_holder[0]
+        item = q.get()
+        if item is None:
+            break
+        yield item
+
+
 def run_slam(imagedir, masks, calib=None, depth=None, stride=1,  
              filter_thresh=2.4, disable_vis=True):
     """ Maksed DROID-SLAM """
@@ -150,7 +178,7 @@ def run_slam(imagedir, masks, calib=None, depth=None, stride=1,
     if calib is None:
         calib = est_calib(imagedir)
 
-    for t, (frame_idx, image, intrinsics) in enumerate(tqdm(image_stream(imagedir, calib, stride))):
+    for t, (frame_idx, image, intrinsics) in enumerate(tqdm(_prefetching_image_stream(imagedir, calib, stride))):
 
         if droid is None:
             args.image_size = [image.shape[2], image.shape[3]]

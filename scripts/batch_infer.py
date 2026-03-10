@@ -1025,7 +1025,7 @@ def get_parser():
     parser.add_argument(
         "--metric3d_batch_size",
         type=int,
-        default=8,
+        default=32,
         help="Batch size for Metric3D depth estimation in SLAM stage",
     )
     parser.add_argument(

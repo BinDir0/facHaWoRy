@@ -5,6 +5,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__) + '/../..')
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from glob import glob
 from tqdm import tqdm
 import numpy as np
@@ -56,7 +57,7 @@ def build_metric3d_runner(weight_path='thirdparty/Metric3D/weights/metric_depth_
     return metric
 
 
-def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=16):  # Increased from 8 to 16
+def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=32):
     # File and folders
     file = args.video_path
     video_root = os.path.dirname(file)
@@ -116,20 +117,23 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
 
     # Batch processing for Metric3D
     num_frames = len(tstamp)
-    for batch_start in tqdm(range(0, num_frames, metric3d_batch_size), desc="Metric3D batches", disable=QUIET_MODE):
-        batch_end = min(batch_start + metric3d_batch_size, num_frames)
-        batch_indices = tstamp[batch_start:batch_end]
+    with ThreadPoolExecutor(max_workers=8) as frame_loader:
+        for batch_start in tqdm(range(0, num_frames, metric3d_batch_size), desc="Metric3D batches", disable=QUIET_MODE):
+            batch_end = min(batch_start + metric3d_batch_size, num_frames)
+            batch_indices = tstamp[batch_start:batch_end]
 
-        # Load batch of frames (list comprehension allows backend optimization)
-        batch_frames = [frame_source.get_frame(int(t), rgb=True) for t in batch_indices]
+            # Parallel frame loading
+            batch_frames = list(frame_loader.map(
+                lambda t: frame_source.get_frame(int(t), rgb=True), batch_indices
+            ))
 
-        # Batch inference
-        batch_depths = metric.batch_inference(batch_frames, calib)
+            # Batch inference
+            batch_depths = metric.batch_inference(batch_frames, calib)
 
-        # Resize and append results
-        for pred_depth in batch_depths:
-            pred_depth = cv2.resize(pred_depth, (W, H))
-            pred_depths.append(pred_depth)
+            # Resize and append results
+            for pred_depth in batch_depths:
+                pred_depth = cv2.resize(pred_depth, (W, H))
+                pred_depths.append(pred_depth)
 
     ##### Estimate Metric Scale #####
     vprint('Estimating Metric Scale ...')

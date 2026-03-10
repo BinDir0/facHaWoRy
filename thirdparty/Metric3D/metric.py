@@ -217,7 +217,8 @@ class Metric3D:
             input=batch_tensor,
             cam_model=batch_cam_models_stacked,
         )
-        pred_depth_batch, confidence_batch, output_dict = self.model_.module.inference(data)
+        with torch.cuda.amp.autocast():
+            pred_depth_batch, confidence_batch, output_dict = self.model_.module.inference(data)
 
         # Split batch results
         pred_depths_batch = [pred_depth_batch[i:i+1] for i in range(len(rgb_images))]

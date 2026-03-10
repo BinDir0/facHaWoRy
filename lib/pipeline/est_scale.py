@@ -93,17 +93,18 @@ def est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=None, near_thresh=0,
         scale = np.median(s_est)
 
 
-    # Stage 2: Robust optimization
+    # Stage 2: Robust optimization on GPU
     robust = (msk<0.5) * (0<slam_depth_0) * (slam_depth_0<far_thresh) * (near_thresh<pred_depth) * (pred_depth<far_thresh)
-    pm = torch.from_numpy(pred_depth[robust])
-    sm = torch.from_numpy(slam_depth[robust])
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    pm = torch.from_numpy(pred_depth[robust]).to(device)
+    sm = torch.from_numpy(slam_depth[robust]).to(device)
 
     def f(x):
         loss = sm * x - pm
         loss = gmof(loss, sigma=sigma).mean()
         return loss
 
-    x0 = torch.tensor([scale])
+    x0 = torch.tensor([scale], device=device)
     result = minimize(f, x0,  method='bfgs')
     scale = result.x.detach().cpu().item()
 
