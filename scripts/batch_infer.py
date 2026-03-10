@@ -385,14 +385,46 @@ class BatchScheduler:
         stage_results = {}
         completed = 0
         total = len(pending_videos)
+        last_save = 0
 
         while completed < total:
             try:
                 result = result_queue.get(timeout=1)
+            except:
+                # Check if all workers are done
+                if all(not w.is_alive() for w in workers):
+                    break
+                continue
+
+            video_path = result["video"]
+            success = result["success"]
+            gpu = result["gpu"]
+
+            task = self.tasks[video_path]
+            if success:
+                task.stage_status[stage] = "completed"
+                self.emit_event("stage_success", video=video_path, stage=stage, gpu=gpu)
+            else:
+                task.stage_status[stage] = "failed"
+                self.emit_event("stage_failure", video=video_path, stage=stage, gpu=gpu)
+
+            stage_results[video_path] = success
+            completed += 1
+
+            # Update progress bar immediately
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix({"success": sum(1 for ok in stage_results.values() if ok), "failed": sum(1 for ok in stage_results.values() if not ok)})
+
+            # Drain any additional results that are already in the queue (no blocking)
+            while not result_queue.empty():
+                try:
+                    result = result_queue.get_nowait()
+                except:
+                    break
                 video_path = result["video"]
                 success = result["success"]
                 gpu = result["gpu"]
-
                 task = self.tasks[video_path]
                 if success:
                     task.stage_status[stage] = "completed"
@@ -400,20 +432,16 @@ class BatchScheduler:
                 else:
                     task.stage_status[stage] = "failed"
                     self.emit_event("stage_failure", video=video_path, stage=stage, gpu=gpu)
-
                 stage_results[video_path] = success
                 completed += 1
-
-                # Update progress bar if provided
                 if pbar:
                     pbar.update(1)
                     pbar.set_postfix({"success": sum(1 for ok in stage_results.values() if ok), "failed": sum(1 for ok in stage_results.values() if not ok)})
 
+            # Save status periodically (not every single video — reduces I/O)
+            if completed - last_save >= 10 or completed >= total:
                 self.save_status()
-            except:
-                # Check if all workers are done
-                if all(not w.is_alive() for w in workers):
-                    break
+                last_save = completed
 
         # Wait for all workers to finish
         for w in workers:
