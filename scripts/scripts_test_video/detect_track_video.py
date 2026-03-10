@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__) + '/../..')
 
-from lib.pipeline.frame_source import build_frame_source_auto
+from lib.pipeline.frame_source import build_frame_source
 from lib.pipeline.tools import detect_track
 
 # Check if we should suppress verbose output
@@ -17,7 +17,7 @@ def vprint(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def detect_track_video(args, detector_runner=None, force=False, detect_batch_size=1, prefetch_frames=16, device='cuda:0', half_precision=True):
+def detect_track_video(args, detector_runner=None, force=False, detect_batch_size=128, num_io_workers=8, device='cuda:0', half_precision=True):
     file = args.video_path
     root = os.path.dirname(file)
     seq = os.path.basename(file).split('.')[0]
@@ -26,9 +26,7 @@ def detect_track_video(args, detector_runner=None, force=False, detect_batch_siz
     os.makedirs(seq_folder, exist_ok=True)
     vprint(f'Running detect_track on {file} ...')
 
-    backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, backend_used = build_frame_source_auto(file, backend=backend)
-    vprint(f'Frame backend: {backend_used}')
+    frame_source = build_frame_source(file)
 
     ##### Detection + Track #####
     vprint('Detect and Track ...')
@@ -46,18 +44,14 @@ def detect_track_video(args, detector_runner=None, force=False, detect_batch_siz
         os.remove(cache_file)
 
     os.makedirs(f"{seq_folder}/tracks_{start_idx}_{end_idx}", exist_ok=True)
-    # Increased threshold from 0.2 to 0.35 to reduce false positives
-    # Especially important when hands leave frame or camera moves rapidly
-    # Edge detections require even higher confidence (0.4) to avoid background objects
     boxes_, tracks_ = detect_track(
         frame_source,
         thresh=0.35,
         edge_margin_ratio=0.1,
         min_edge_conf=0.4,
         hand_det_model=detector_runner,
-        reset_tracker=True,
         detect_batch_size=detect_batch_size,
-        prefetch_frames=prefetch_frames,
+        num_io_workers=num_io_workers,
         device=device,
         half_precision=half_precision,
     )
@@ -72,7 +66,8 @@ if __name__ == '__main__':
     parser.add_argument("--img_focal", type=float)
     parser.add_argument("--video_path", type=str, default='')
     parser.add_argument("--input_type", type=str, default='file')
-    parser.add_argument("--frame_backend", type=str, default='decord', choices=['decord', 'opencv'])
+    parser.add_argument("--detect_batch_size", type=int, default=128)
+    parser.add_argument("--detect_io_workers", type=int, default=8)
     args = parser.parse_args()
 
-    detect_track_video(args)
+    detect_track_video(args, detect_batch_size=args.detect_batch_size, num_io_workers=args.detect_io_workers)

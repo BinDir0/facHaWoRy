@@ -79,11 +79,9 @@ class BatchScheduler:
         metric3d_batch_size: int,
         render_batch_size: int,
         detect_batch_size: int,
-        detect_prefetch_frames: int,
         detect_device: str,
         detect_half_precision: bool,
-        detect_video_batch_size: int,
-        frame_backend: str,
+        detect_io_workers: int,
         scheduler_mode: str,
         persistent_worker: bool,
         max_stage_retries: int,
@@ -103,11 +101,9 @@ class BatchScheduler:
         self.metric3d_batch_size = metric3d_batch_size
         self.render_batch_size = render_batch_size
         self.detect_batch_size = detect_batch_size
-        self.detect_prefetch_frames = detect_prefetch_frames
         self.detect_device = detect_device
         self.detect_half_precision = detect_half_precision
-        self.detect_video_batch_size = detect_video_batch_size
-        self.frame_backend = frame_backend
+        self.detect_io_workers = detect_io_workers
         self.scheduler_mode = scheduler_mode
         self.persistent_worker = persistent_worker
         self.max_stage_retries = max_stage_retries
@@ -179,13 +175,12 @@ class BatchScheduler:
         cmd.extend(["--metric3d_batch_size", str(self.metric3d_batch_size)])
         cmd.extend(["--render_batch_size", str(self.render_batch_size)])
         cmd.extend(["--detect_batch_size", str(self.detect_batch_size)])
-        cmd.extend(["--detect_prefetch_frames", str(self.detect_prefetch_frames)])
+        cmd.extend(["--detect_io_workers", str(self.detect_io_workers)])
         cmd.extend(["--detect_device", self.detect_device])
         if self.detect_half_precision:
             cmd.append("--detect_half_precision")
         else:
             cmd.append("--no-detect_half_precision")
-        cmd.extend(["--frame_backend", self.frame_backend])
         if self.enable_profiler:
             cmd.append("--enable_profiler")
         if self.resume:
@@ -229,7 +224,6 @@ class BatchScheduler:
             "--chunk_batch_size", str(self.chunk_batch_size),
             "--num_workers", str(self.num_workers),
             "--render_batch_size", str(self.render_batch_size),
-            "--frame_backend", self.frame_backend,
         ]
         if self.img_focal is not None:
             cmd.extend(["--img_focal", str(self.img_focal)])
@@ -462,8 +456,8 @@ class BatchScheduler:
                 return None
 
             # Prefetch frame source and tracks (IO-bound operations)
-            from lib.pipeline.frame_source import build_frame_source_auto
-            frame_source, _ = build_frame_source_auto(video_path, backend=self.frame_backend)
+            from lib.pipeline.frame_source import build_frame_source
+            frame_source = build_frame_source(video_path)
             tracks = np.load(tracks_dir / "model_tracks.npy", allow_pickle=True).item()
 
             return {
@@ -496,166 +490,61 @@ class BatchScheduler:
             render_batch_size=self.render_batch_size,
             metric3d_batch_size=self.metric3d_batch_size,
             detect_batch_size=self.detect_batch_size,
-            frame_backend=self.frame_backend,
+            detect_io_workers=self.detect_io_workers,
         )
 
         # Ensure stage models are loaded
         runtime.ensure_runner(stage)
 
-        # Check if we should use multi-video batch processing for detect_track
-        if stage == 'detect_track' and self.detect_video_batch_size > 1:
-            self._process_detect_track_multivideo(gpu, video_queue, result_queue, runtime)
-        else:
-            # Standard single-video processing with prefetching
-            from concurrent.futures import ThreadPoolExecutor
+        # Standard single-video processing with prefetching
+        from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=1) as prefetcher:
-                # Get first video
-                try:
-                    video_path = video_queue.get(timeout=1)
-                except:
-                    video_path = None
+        with ThreadPoolExecutor(max_workers=1) as prefetcher:
+            # Get first video
+            try:
+                video_path = video_queue.get(timeout=1)
+            except:
+                video_path = None
 
-                prefetch_future = None
+            prefetch_future = None
 
-                while video_path is not None:
-                    # Get prefetched data for current video (if available)
-                    prefetched_data = None
-                    if prefetch_future is not None:
-                        try:
-                            prefetched_data = prefetch_future.result()
-                        except Exception:
-                            prefetched_data = None
-
-                    # Peek at next video and start prefetching
+            while video_path is not None:
+                # Get prefetched data for current video (if available)
+                prefetched_data = None
+                if prefetch_future is not None:
                     try:
-                        next_video = video_queue.get(timeout=0)
-                    except:
-                        next_video = None
+                        prefetched_data = prefetch_future.result()
+                    except Exception:
+                        prefetched_data = None
 
-                    next_future = None
-                    if next_video is not None:
-                        next_future = prefetcher.submit(
-                            self._prefetch_video_data, next_video, stage, runtime
-                        )
+                # Peek at next video and start prefetching
+                try:
+                    next_video = video_queue.get(timeout=0)
+                except:
+                    next_video = None
 
-                    # Process current video (GPU busy here)
-                    success = self.run_single_video_with_runtime(
-                        video_path, stage, gpu, runtime,
-                        prefetched_data=prefetched_data,
+                next_future = None
+                if next_video is not None:
+                    next_future = prefetcher.submit(
+                        self._prefetch_video_data, next_video, stage, runtime
                     )
 
-                    # Report result
-                    result_queue.put({
-                        "video": video_path,
-                        "success": success,
-                        "gpu": gpu,
-                    })
-
-                    # Move to next
-                    video_path = next_video
-                    prefetch_future = next_future
-
-    def _process_detect_track_multivideo(self, gpu: int, video_queue: mp.Queue, result_queue: mp.Queue, runtime):
-        """Process multiple videos concurrently using cross-video batching for detect_track stage."""
-        sys.path.insert(0, str(PROJECT_ROOT / "lib" / "pipeline"))
-        from tools import detect_track_multivideo
-        from batch_worker import get_seq_folder, is_stage_complete
-        sys.path.insert(0, str(PROJECT_ROOT / "lib" / "pipeline"))
-        from frame_source import build_frame_source_auto
-
-        batch_size = self.detect_video_batch_size
-
-        while True:
-            # Pull multiple videos from queue
-            video_batch = []
-            for _ in range(batch_size):
-                try:
-                    vp = video_queue.get(timeout=1)
-                    if vp is None:
-                        break
-                    video_batch.append(vp)
-                except:
-                    break
-
-            if not video_batch:
-                break
-
-            # Check which videos need processing
-            videos_to_process = []
-            for vp in video_batch:
-                seq_folder = get_seq_folder(vp)
-                if self.resume and is_stage_complete('detect_track', seq_folder, fast_check=True):
-                    # Skip already completed
-                    result_queue.put({"video": vp, "success": True, "gpu": gpu})
-                else:
-                    videos_to_process.append(vp)
-
-            if not videos_to_process:
-                continue
-
-            # Build frame sources and cache frame counts
-            video_sources = []
-            frame_counts = {}  # Cache frame counts to avoid rebuilding frame sources
-            for idx, vp in enumerate(videos_to_process):
-                try:
-                    fs, _ = build_frame_source_auto(vp, backend=self.frame_backend)
-                    video_sources.append((idx, fs))
-                    frame_counts[idx] = len(fs)  # Cache frame count
-                except Exception as e:
-                    print(f"Error building frame source for {vp}: {e}")
-                    result_queue.put({"video": vp, "success": False, "gpu": gpu})
-
-            if not video_sources:
-                continue
-
-            # Process batch with multi-video detection
-            try:
-                results = detect_track_multivideo(
-                    video_sources,
-                    thresh=0.35,
-                    hand_det_model=runtime.detector_runner
+                # Process current video (GPU busy here)
+                success = self.run_single_video_with_runtime(
+                    video_path, stage, gpu, runtime,
+                    prefetched_data=prefetched_data,
                 )
 
-                # Save results for each video
-                for idx, vp in enumerate(videos_to_process):
-                    if idx not in results:
-                        result_queue.put({"video": vp, "success": False, "gpu": gpu})
-                        continue
+                # Report result
+                result_queue.put({
+                    "video": video_path,
+                    "success": success,
+                    "gpu": gpu,
+                })
 
-                    try:
-                        boxes, tracks = results[idx]
-                        seq_folder = get_seq_folder(vp)
-
-                        # Get frame range from cache (avoid rebuilding frame source)
-                        start_idx = 0
-                        end_idx = frame_counts.get(idx, 0)
-                        if end_idx == 0:
-                            # Fallback if not in cache
-                            fs, _ = build_frame_source_auto(vp, backend=self.frame_backend)
-                            end_idx = len(fs)
-
-                        # Save outputs
-                        output_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
-                        output_dir.mkdir(parents=True, exist_ok=True)
-
-                        np.save(output_dir / "model_boxes.npy", boxes)
-                        np.save(output_dir / "model_tracks.npy", tracks)
-
-                        result_queue.put({"video": vp, "success": True, "gpu": gpu})
-                    except Exception as e:
-                        print(f"Error saving results for {vp}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        result_queue.put({"video": vp, "success": False, "gpu": gpu})
-
-            except Exception as e:
-                print(f"Error in multi-video batch processing: {e}")
-                import traceback
-                traceback.print_exc()
-                # Mark all videos as failed
-                for vp in videos_to_process:
-                    result_queue.put({"video": vp, "success": False, "gpu": gpu})
+                # Move to next
+                video_path = next_video
+                prefetch_future = next_future
 
     def run_single_video_with_runtime(self, video_path: str, stage: str, gpu: int, runtime, prefetched_data=None) -> bool:
         """Run a single stage for a single video using existing runtime."""
@@ -672,6 +561,9 @@ class BatchScheduler:
         task_ns.force = False
         task_ns.seed = 42
         task_ns.detect_batch_size = self.detect_batch_size
+        task_ns.detect_io_workers = self.detect_io_workers
+        task_ns.detect_device = self.detect_device
+        task_ns.detect_half_precision = self.detect_half_precision
         task_ns.chunk_batch_size = self.chunk_batch_size
         task_ns.num_workers = self.num_workers
         task_ns.metric3d_batch_size = self.metric3d_batch_size
@@ -1142,25 +1034,17 @@ def get_parser():
         default=8,
         help="Batch size for rendering phase in motion stage (Phase 3). Higher = faster but more GPU memory. Default: 8",
     )
-    # CRITICAL: detect_batch_size MUST be 1 for tracking to work correctly.
-    # Tracking is stateful and sequential - each frame depends on previous frame's
-    # Kalman filter state. Batching multiple frames breaks this dependency and
-    # causes "LinAlgError: leading minor not positive definite" in tracker.
-    #
-    # For performance optimization, use cross-video batching (detect_video_batch_size)
-    # instead, which processes multiple videos in parallel while maintaining
-    # per-video tracker state.
     parser.add_argument(
         "--detect_batch_size",
         type=int,
-        default=1,
-        help="MUST be 1 - frame-level batching breaks tracker state",
+        default=128,
+        help="Batch size for YOLO detection in detect_track stage (default: 128)",
     )
     parser.add_argument(
-        "--detect_prefetch_frames",
+        "--detect_io_workers",
         type=int,
-        default=16,
-        help="Number of frames to prefetch in background thread for detect_track stage (0=disable, recommend 16-32 for high-end systems)",
+        default=8,
+        help="Number of DataLoader workers for parallel frame loading in detect_track stage",
     )
     parser.add_argument(
         "--detect_device",
@@ -1179,19 +1063,6 @@ def get_parser():
         dest="detect_half_precision",
         action="store_false",
         help="Disable FP16 for YOLO detector",
-    )
-    parser.add_argument(
-        "--detect_video_batch_size",
-        type=int,
-        default=8,
-        help="Number of videos to process concurrently per GPU (cross-video batching for detect_track stage)",
-    )
-    parser.add_argument(
-        "--frame_backend",
-        type=str,
-        default="decord",
-        choices=["decord", "opencv"],
-        help="Frame decode backend",
     )
     parser.add_argument(
         "--enable_profiler",
@@ -1234,16 +1105,6 @@ def get_parser():
 
 def main():
     args = get_parser().parse_args()
-
-    # Validate detect_batch_size
-    if args.detect_batch_size > 1:
-        print(
-            f"ERROR: detect_batch_size must be 1 (got {args.detect_batch_size}).\n"
-            "Frame-level batching breaks YOLO tracker state and causes Kalman filter errors.\n"
-            "Use --detect_video_batch_size to process multiple videos in parallel instead.",
-            file=sys.stderr
-        )
-        sys.exit(1)
 
     if args.video_list:
         with open(args.video_list) as f:
@@ -1298,10 +1159,9 @@ def main():
     print(f"Max retries: {args.retries}")
     print(f"Max stage retries (wave): {args.max_stage_retries}")
     print(f"Detect batch size (detect_track): {args.detect_batch_size}")
-    print(f"Detect video batch size (detect_track multi-video): {args.detect_video_batch_size}")
+    print(f"Detect I/O workers: {args.detect_io_workers}")
     print(f"Chunk batch size (motion): {args.chunk_batch_size}")
     print(f"Metric3D batch size (slam): {args.metric3d_batch_size}")
-    print(f"Frame backend: {args.frame_backend}")
     print(f"Resume: {args.resume}")
     print(f"Run directory: {run_dir}")
     print()
@@ -1321,11 +1181,9 @@ def main():
         metric3d_batch_size=args.metric3d_batch_size,
         render_batch_size=args.render_batch_size,
         detect_batch_size=args.detect_batch_size,
-        detect_prefetch_frames=args.detect_prefetch_frames,
         detect_device=args.detect_device,
         detect_half_precision=args.detect_half_precision,
-        detect_video_batch_size=args.detect_video_batch_size,
-        frame_backend=args.frame_backend,
+        detect_io_workers=args.detect_io_workers,
         scheduler_mode=args.scheduler_mode,
         persistent_worker=args.persistent_worker,
         max_stage_retries=args.max_stage_retries,

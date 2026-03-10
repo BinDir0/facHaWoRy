@@ -13,7 +13,7 @@ import cv2
 from pycocotools import mask as masktool
 from lib.pipeline.masked_droid_slam import *
 from lib.pipeline.est_scale import *
-from lib.pipeline.frame_source import build_frame_source_auto
+from lib.pipeline.frame_source import build_frame_source
 from hawor.utils.process import block_print, enable_print
 
 sys.path.insert(0, os.path.dirname(__file__) + '/../../thirdparty/Metric3D')
@@ -65,8 +65,7 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     os.makedirs(seq_folder, exist_ok=True)
     video_folder = os.path.join(video_root, video)
 
-    frame_backend = getattr(args, 'frame_backend', 'decord')
-    frame_source, _ = build_frame_source_auto(file, backend=frame_backend)
+    frame_source = build_frame_source(file)
 
     first_img = frame_source.get_frame(0, rgb=False)
     height, width, _ = first_img.shape
@@ -168,7 +167,6 @@ if __name__ == '__main__':
     parser.add_argument("--img_focal", type=float)
     parser.add_argument("--video_path", type=str, default='')
     parser.add_argument("--input_type", type=str, default='file')
-    parser.add_argument("--frame_backend", type=str, default='decord', choices=['decord', 'opencv'])
     args = parser.parse_args()
 
     # Need detect_track first to get track indices

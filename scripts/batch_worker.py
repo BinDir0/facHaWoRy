@@ -264,8 +264,8 @@ class WorkerRuntime:
         num_workers: int = 16,
         render_batch_size: int = 8,
         metric3d_batch_size: int = 8,
-        detect_batch_size: int = 8,
-        frame_backend: str = "decord",
+        detect_batch_size: int = 128,
+        detect_io_workers: int = 8,
     ):
         self.gpu = gpu
         self.checkpoint = checkpoint
@@ -277,7 +277,7 @@ class WorkerRuntime:
         self.render_batch_size = render_batch_size
         self.metric3d_batch_size = metric3d_batch_size
         self.detect_batch_size = detect_batch_size
-        self.frame_backend = frame_backend
+        self.detect_io_workers = detect_io_workers
 
         self.detector_runner = None
         self.motion_runner = None
@@ -304,7 +304,7 @@ class WorkerRuntime:
         args.render_batch_size = self.render_batch_size
         args.metric3d_batch_size = self.metric3d_batch_size
         args.detect_batch_size = self.detect_batch_size
-        args.frame_backend = self.frame_backend
+        args.detect_io_workers = self.detect_io_workers
         args.vis_mode = "world"
         args.skip_vis = True
         return args
@@ -366,7 +366,6 @@ def build_stage_args(ns):
     args.checkpoint = ns.checkpoint
     args.infiller_weight = ns.infiller_weight
     args.chunk_batch_size = ns.chunk_batch_size
-    args.frame_backend = ns.frame_backend
     args.vis_mode = "world"
     args.skip_vis = True
     return args
@@ -394,7 +393,7 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns, prefetched_data=None):
             detector_runner=runtime.detector_runner,
             force=ns.force,
             detect_batch_size=ns.detect_batch_size,
-            prefetch_frames=ns.detect_prefetch_frames,
+            num_io_workers=ns.detect_io_workers,
             device=ns.detect_device,
             half_precision=ns.detect_half_precision,
         )
@@ -466,7 +465,7 @@ def worker_runtime_loop(ns):
         chunk_batch_size=ns.chunk_batch_size,
         num_workers=getattr(ns, 'num_workers', 16),
         render_batch_size=getattr(ns, 'render_batch_size', 8),
-        frame_backend=ns.frame_backend,
+        detect_io_workers=getattr(ns, 'detect_io_workers', 8),
     )
 
     with open(ns.video_list) as f:
@@ -541,7 +540,7 @@ def run_stage(ns):
         start_idx, end_idx, _, _ = detect_track_video(
             stage_args,
             detect_batch_size=ns.detect_batch_size,
-            prefetch_frames=ns.detect_prefetch_frames,
+            num_io_workers=ns.detect_io_workers,
             device=ns.detect_device,
             half_precision=ns.detect_half_precision,
         )
@@ -626,23 +625,14 @@ def get_parser():
     parser.add_argument("--num_workers", type=int, default=16, help="Number of DataLoader workers for parallel frame loading")
     parser.add_argument("--render_batch_size", type=int, default=8, help="Batch size for rendering phase")
     parser.add_argument("--metric3d_batch_size", type=int, default=8, help="Batch size for Metric3D depth estimation")
-    # CRITICAL: detect_batch_size MUST be 1 for tracking to work correctly.
-    # Tracking is stateful and sequential - each frame depends on previous frame's
-    # Kalman filter state. Batching multiple frames breaks this dependency and
-    # causes "LinAlgError: leading minor not positive definite" in tracker.
-    #
-    # For performance optimization, use cross-video batching (detect_video_batch_size)
-    # instead, which processes multiple videos in parallel while maintaining
-    # per-video tracker state.
-    parser.add_argument("--detect_batch_size", type=int, default=1, help="MUST be 1 - frame-level batching breaks tracker state")
-    parser.add_argument("--detect_prefetch_frames", type=int, default=16, help="Number of frames to prefetch in background thread (0=disable, recommend 16-32 for high-end systems)")
+    parser.add_argument("--detect_batch_size", type=int, default=128, help="Batch size for YOLO detection (default 128)")
+    parser.add_argument("--detect_io_workers", type=int, default=8, help="Number of DataLoader workers for parallel frame loading")
     parser.add_argument("--detect_device", type=str, default="cuda:0", help="Device for YOLO detector (e.g., cuda:0)")
     parser.add_argument("--detect_half_precision", action="store_true", default=True, help="Use FP16 for YOLO detector (2x faster)")
     parser.add_argument("--no-detect_half_precision", dest="detect_half_precision", action="store_false", help="Disable FP16 for YOLO")
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--force", action="store_true", help="Ignore existing outputs and rerun this stage")
-    parser.add_argument("--frame_backend", type=str, default="decord", choices=["decord", "opencv"], help="Frame decode backend")
     parser.add_argument("--video_list", type=str, help="Optional file with one video path per line for persistent worker mode")
     parser.add_argument("--persistent_worker", action="store_true", help="Run as long-lived stage worker for multiple videos")
     parser.add_argument("--enable_profiler", action="store_true", help="Enable torch profiler to diagnose performance bottlenecks")
@@ -652,14 +642,6 @@ def get_parser():
 
 if __name__ == "__main__":
     args = get_parser().parse_args()
-
-    # Validate detect_batch_size
-    if args.detect_batch_size > 1:
-        raise ValueError(
-            f"detect_batch_size must be 1 (got {args.detect_batch_size}). "
-            "Frame-level batching breaks YOLO tracker state and causes Kalman filter errors. "
-            "Use --detect_video_batch_size to process multiple videos in parallel instead."
-        )
 
     if args.persistent_worker:
         if not args.video_list:
