@@ -160,25 +160,21 @@ class HAWOR(pl.LightningModule):
         # estimate focal length, and bbox
         bbox_info = self.bbox_est(center, scale, img_focal, img_center)
 
-        # FP16 autocast for entire forward pass on tensor-core GPUs
+        # FP16 autocast for backbone only (temporal attention and MANO head stay FP32)
         with torch.cuda.amp.autocast(dtype=torch.float16):
             feature = self.backbone(image[:,:,:,32:-32])
+        feature = feature.float()
 
-            # space-time module
-            if self.st_module is not None:
-                bb = einops.repeat(bbox_info, 'b c -> b c h w', h=16, w=12)
-                feature = torch.cat([feature, bb], dim=1)
+        # space-time module (FP32)
+        if self.st_module is not None:
+            bb = einops.repeat(bbox_info, 'b c -> b c h w', h=16, w=12)
+            feature = torch.cat([feature, bb], dim=1)
 
-                feature = einops.rearrange(feature, '(b t) c h w -> (b h w) t c', t=16)
-                feature = self.st_module(feature)
-                feature = einops.rearrange(feature, '(b h w) t c -> (b t) c h w', h=16, w=12)
+            feature = einops.rearrange(feature, '(b t) c h w -> (b h w) t c', t=16)
+            feature = self.st_module(feature)
+            feature = einops.rearrange(feature, '(b h w) t c -> (b t) c h w', h=16, w=12)
 
-            pred_pose, pred_shape, pred_cam = self.mano_head(feature)
-
-        # Back to float32 for precision-sensitive operations
-        pred_pose = pred_pose.float()
-        pred_shape = pred_shape.float()
-        pred_cam = pred_cam.float()
+        pred_pose, pred_shape, pred_cam = self.mano_head(feature)
         pred_rotmat_0 = rot6d_to_rotmat(pred_pose).reshape(-1, self.pose_num, 3, 3)
 
         # smpl motion module
