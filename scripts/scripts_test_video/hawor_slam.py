@@ -58,6 +58,10 @@ def build_metric3d_runner(weight_path='thirdparty/Metric3D/weights/metric_depth_
 
 
 def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size=32):
+    import time
+    timing = {}
+    t_start = time.time()
+
     # File and folders
     file = args.video_path
     video_root = os.path.dirname(file)
@@ -70,11 +74,11 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
 
     first_img = frame_source.get_frame(0, rgb=False)
     height, width, _ = first_img.shape
-    
+
     vprint(f'Running slam on {video_folder} ...')
 
-    ##### Run SLAM #####
-    # Use Masking
+    ##### Load masks #####
+    t0 = time.time()
     masks = np.load(f'{video_folder}/tracks_{start_idx}_{end_idx}/model_masks.npy', allow_pickle=True)
     masks = torch.from_numpy(masks)
     vprint(masks.shape)
@@ -87,16 +91,18 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
                 focal = file.read()
                 focal = float(focal)
         except:
-            
+
             vprint('No focal length provided')
             focal = 600
             with open(os.path.join(video_folder, 'est_focal.txt'), 'w') as file:
                 file.write(str(focal))
     calib = np.array(est_calib(frame_source)) # [focal, focal, cx, cy]
-    center = calib[2:]        
+    center = calib[2:]
     calib[:2] = focal
-    
-    # Droid-slam with masking
+    timing['1_load_masks'] = time.time() - t0
+
+    ##### Run SLAM #####
+    t0 = time.time()
     droid, traj = run_slam(frame_source, masks=masks, calib=calib)
     n = droid.video.counter.value
     tstamp = droid.video.tstamp.cpu().int().numpy()[:n]
@@ -105,8 +111,10 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
 
     del droid
     torch.cuda.empty_cache()
+    timing['2_droid_slam'] = time.time() - t0
 
-    # Estimate scale
+    ##### Metric3D depth estimation #####
+    t0 = time.time()
     metric = metric_runner or build_metric3d_runner()
     min_threshold = 0.4
     max_threshold = 0.7
@@ -134,8 +142,10 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
             for pred_depth in batch_depths:
                 pred_depth = cv2.resize(pred_depth, (W, H))
                 pred_depths.append(pred_depth)
+    timing['3_metric3d'] = time.time() - t0
 
     ##### Estimate Metric Scale #####
+    t0 = time.time()
     vprint('Estimating Metric Scale ...')
     scales_ = []
     n = len(tstamp)   # for each keyframe
@@ -144,26 +154,44 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
         disp = disps[i]
         pred_depth = pred_depths[i]
         slam_depth = 1/disp
-        
+
         # Estimate scene scale
         msk = masks[t].numpy().astype(np.uint8)
-        scale = est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=msk, near_thresh=min_threshold, far_thresh=max_threshold)  
+        scale = est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=msk, near_thresh=min_threshold, far_thresh=max_threshold)
         while math.isnan(scale):
             min_threshold -= 0.1
             max_threshold += 0.1
-            scale = est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=msk, near_thresh=min_threshold, far_thresh=max_threshold)                    
+            scale = est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=msk, near_thresh=min_threshold, far_thresh=max_threshold)
         scales_.append(scale)
 
     median_s = np.median(scales_)
     vprint(f"estimated scale: {median_s}")
+    timing['4_scale_est'] = time.time() - t0
 
-    # Save results
+    ##### Save results #####
+    t0 = time.time()
     os.makedirs(f"{seq_folder}/SLAM", exist_ok=True)
     save_path = f'{seq_folder}/SLAM/hawor_slam_w_scale_{start_idx}_{end_idx}.npz'
     np.savez(save_path,
             tstamp=tstamp, disps=disps, traj=traj,
             img_focal=focal, img_center=calib[-2:],
             scale=median_s)
+    timing['5_save'] = time.time() - t0
+
+    # Print timing breakdown
+    total_time = time.time() - t_start
+    timing['total'] = total_time
+    video_name = os.path.basename(args.video_path)
+    print(f"\n{'='*60}")
+    print(f"SLAM Stage Timing for {video_name}")
+    print(f"{'='*60}")
+    for key in ['1_load_masks', '2_droid_slam', '3_metric3d', '4_scale_est', '5_save']:
+        t = timing.get(key, 0)
+        pct = t / total_time * 100 if total_time > 0 else 0
+        print(f"  {key:20s}: {t:7.2f}s ({pct:5.1f}%)")
+    print(f"  {'total':20s}: {total_time:7.2f}s")
+    print(f"  {'keyframes':20s}: {num_frames}")
+    print(f"{'='*60}\n")
 
 
 if __name__ == '__main__':
