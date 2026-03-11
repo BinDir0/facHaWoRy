@@ -283,6 +283,7 @@ class WorkerRuntime:
         self.motion_runner = None
         self.metric_runner = None
         self.infiller_runner = None
+        self.droid_net = None
         self.mano_right = None
         self.mano_left = None
 
@@ -347,6 +348,11 @@ class WorkerRuntime:
             from scripts.scripts_test_video.hawor_slam import build_metric3d_runner
 
             self.metric_runner = build_metric3d_runner()
+
+        if stage == "slam" and self.droid_net is None:
+            from lib.pipeline.masked_droid_slam import build_droid_net
+
+            self.droid_net = build_droid_net()
 
         if stage == "infiller" and self.infiller_runner is None:
             from scripts.scripts_test_video.hawor_video import build_infiller_runner
@@ -425,7 +431,7 @@ def run_stage_with_runtime(runtime: WorkerRuntime, ns, prefetched_data=None):
             prefetched_data=prefetched_data,
         )
     elif ns.stage == "slam":
-        hawor_slam(stage_args, start_idx, end_idx, metric_runner=runtime.metric_runner, metric3d_batch_size=ns.metric3d_batch_size)
+        hawor_slam(stage_args, start_idx, end_idx, metric_runner=runtime.metric_runner, metric3d_batch_size=ns.metric3d_batch_size, droid_net=runtime.droid_net)
     elif ns.stage == "infiller":
         tracks_dir = seq_folder / f"tracks_{start_idx}_{end_idx}"
         frame_chunks_all = joblib.load(tracks_dir / "frame_chunks_all.npy")

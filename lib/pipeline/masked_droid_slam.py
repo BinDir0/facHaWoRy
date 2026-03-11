@@ -16,6 +16,7 @@ from glob import glob
 from lib.pipeline.frame_source import ImageFolderFrameSource
 
 from droid import Droid
+from droid_net import DroidNet
 from torch.multiprocessing import Process
 
 import evo
@@ -64,6 +65,21 @@ try:
     torch.multiprocessing.set_start_method('spawn')
 except RuntimeError:
     pass  # Already set, which is fine
+
+
+def build_droid_net(weights='weights/external/droid.pth'):
+    """Pre-load DroidNet weights once for reuse across multiple videos."""
+    from collections import OrderedDict
+    net = DroidNet()
+    state_dict = OrderedDict([
+        (k.replace("module.", ""), v) for (k, v) in torch.load(weights).items()])
+    state_dict["update.weight.2.weight"] = state_dict["update.weight.2.weight"][:2]
+    state_dict["update.weight.2.bias"] = state_dict["update.weight.2.bias"][:2]
+    state_dict["update.delta.2.weight"] = state_dict["update.delta.2.weight"][:2]
+    state_dict["update.delta.2.bias"] = state_dict["update.delta.2.bias"][:2]
+    net.load_state_dict(state_dict)
+    net.to("cuda:0").eval()
+    return net
 
 
 def _to_frame_source(imagedir):
@@ -139,7 +155,7 @@ def image_stream(imagedir, calib, stride, max_frame=None):
         yield frame_idx, image[None], intrinsics
 
 
-def _prefetching_image_stream(imagedir, calib, stride, buffer_size=4):
+def _prefetching_image_stream(imagedir, calib, stride, buffer_size=16):
     """Wrap image_stream with background prefetching to overlap I/O with GPU compute."""
     q = queue.Queue(maxsize=buffer_size)
     exception_holder = [None]
@@ -165,8 +181,8 @@ def _prefetching_image_stream(imagedir, calib, stride, buffer_size=4):
         yield item
 
 
-def run_slam(imagedir, masks, calib=None, depth=None, stride=1,  
-             filter_thresh=2.4, disable_vis=True):
+def run_slam(imagedir, masks, calib=None, depth=None, stride=1,
+             filter_thresh=2.4, disable_vis=True, droid_net=None):
     """ Maksed DROID-SLAM """
     droid = None
     depth = None
@@ -182,7 +198,7 @@ def run_slam(imagedir, masks, calib=None, depth=None, stride=1,
 
         if droid is None:
             args.image_size = [image.shape[2], image.shape[3]]
-            droid = Droid(args)
+            droid = Droid(args, net=droid_net)
 
         img_msk = img_msks[t]
         conf_msk = conf_msks[t]

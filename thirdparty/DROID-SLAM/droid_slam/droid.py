@@ -14,9 +14,12 @@ from torch.multiprocessing import Process
 
 
 class Droid:
-    def __init__(self, args):
+    def __init__(self, args, net=None):
         super(Droid, self).__init__()
-        self.load_weights(args.weights)
+        if net is not None:
+            self.net = net
+        else:
+            self.load_weights(args.weights)
         self.args = args
         self.disable_vis = args.disable_vis
 

@@ -821,7 +821,7 @@ class RAFTDepthNormalDPT5(nn.Module):
         # import matplotlib.pyplot as plt 
         # plt.bar(range(len(h)), h)
         B = prob.shape[0]
-        if "depth_expectation_anchor" not in self._buffers:
+        if "depth_expectation_anchor" not in self._buffers or self.depth_expectation_anchor.shape[0] < B:
             self.register_depth_expectation_anchor(self.num_depth_regressor_anchor, B)
         d = compute_depth_expectation(
             prob,
