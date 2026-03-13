@@ -393,5 +393,8 @@ class FactorGraph:
                         if (t0 <= i1 < t) and (t1 <= j1 < t):
                             d[(i1-t0)*(t-t1) + (j1-t1)] = np.inf
 
+        if len(es) == 0:
+            return
+
         ii, jj = torch.as_tensor(es, device=self.device).unbind(dim=-1)
         self.add_factors(ii, jj, remove)

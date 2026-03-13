@@ -32,10 +32,16 @@ class DroidBackend:
 
         graph = FactorGraph(self.video, self.update_op, corr_impl="alt", max_factors=16*t, upsample=self.upsample)
 
-        graph.add_proximity_factors(rad=self.backend_radius, 
-                                    nms=self.backend_nms, 
-                                    thresh=self.backend_thresh, 
+        graph.add_proximity_factors(rad=self.backend_radius,
+                                    nms=self.backend_nms,
+                                    thresh=self.backend_thresh,
                                     beta=self.beta)
+
+        # Skip optimization if no edges were added (too few keyframes or all filtered)
+        if graph.ii.shape[0] == 0:
+            graph.clear_edges()
+            self.video.dirty[:t] = True
+            return
 
         graph.update_lowmem(steps=steps)
         self.errors.append(self.cal_err(graph))
