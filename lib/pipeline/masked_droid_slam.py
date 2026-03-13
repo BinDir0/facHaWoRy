@@ -207,7 +207,7 @@ def run_slam(imagedir, masks, calib=None, depth=None, stride=1,
 
         droid.track(frame_idx, image, intrinsics=intrinsics, depth=depth, mask=conf_msk)
 
-    traj = droid.terminate(image_stream(imagedir, calib, stride))
+    traj = droid.terminate(_prefetching_image_stream(imagedir, calib, stride))
 
     return droid, traj
 

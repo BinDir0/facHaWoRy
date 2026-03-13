@@ -147,22 +147,24 @@ def hawor_slam(args, start_idx, end_idx, metric_runner=None, metric3d_batch_size
     ##### Estimate Metric Scale #####
     t0 = time.time()
     vprint('Estimating Metric Scale ...')
-    scales_ = []
-    n = len(tstamp)   # for each keyframe
-    for i in tqdm(range(n), disable=QUIET_MODE):
-        t = tstamp[i]
-        disp = disps[i]
-        pred_depth = pred_depths[i]
-        slam_depth = 1/disp
+    n = len(tstamp)
+    slam_depth_list = [1.0 / disps[i] for i in range(n)]
+    mask_list = [masks[tstamp[i]].numpy().astype(np.uint8) for i in range(n)]
 
-        # Estimate scene scale
-        msk = masks[t].numpy().astype(np.uint8)
-        scale = est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=msk, near_thresh=min_threshold, far_thresh=max_threshold)
-        while math.isnan(scale):
-            min_threshold -= 0.1
-            max_threshold += 0.1
-            scale = est_scale_hybrid(slam_depth, pred_depth, sigma=0.5, msk=msk, near_thresh=min_threshold, far_thresh=max_threshold)
-        scales_.append(scale)
+    scales_ = est_scale_hybrid_batch(
+        slam_depth_list, pred_depths, sigma=0.5,
+        masks=mask_list, near_thresh=min_threshold, far_thresh=max_threshold)
+
+    # Retry NaN entries with relaxed thresholds (rare edge cases)
+    for i in range(n):
+        if math.isnan(scales_[i]):
+            nt, ft = min_threshold, max_threshold
+            while math.isnan(scales_[i]):
+                nt -= 0.1
+                ft += 0.1
+                scales_[i] = est_scale_hybrid(
+                    slam_depth_list[i], pred_depths[i], sigma=0.5,
+                    msk=mask_list[i], near_thresh=nt, far_thresh=ft)
 
     median_s = np.median(scales_)
     vprint(f"estimated scale: {median_s}")
